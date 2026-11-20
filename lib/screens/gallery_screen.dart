@@ -20,6 +20,7 @@ import '../models/scan_document.dart';
 import '../services/app_settings.dart';
 import '../services/backup_service.dart';
 import '../services/import_service.dart';
+import '../services/update_service.dart';
 import '../services/document_repository.dart';
 import '../services/pdf_exporter.dart';
 import '../theme/app_themes.dart';
@@ -34,7 +35,7 @@ import 'settings_screen.dart';
 import 'share_screen.dart';
 import 'trash_screen.dart';
 
-const _appVersion = '1.4.2';
+const _appVersion = '1.5';
 const _apkLink = 'https://github.com/keplerdeskadmin-cpu/kelmo-scan/releases/latest/download/KelmoScan-arm64.apk';
 
 /// "Oct-21, 15:47" — the date style used in the document list.
@@ -74,6 +75,9 @@ class _GalleryScreenState extends State<GalleryScreen> {
   void initState() {
     super.initState();
     _reload();
+    WidgetsBinding.instance.addPostFrameCallback((_) => Future.delayed(const Duration(seconds: 3), () {
+          if (mounted) UpdateService.autoCheck(context);
+        }));
   }
 
   Future<void> _reload() async {
@@ -322,7 +326,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
   void _about() => showAboutDialog(
         context: context,
         applicationName: 'Kelmo Scan',
-        applicationVersion: 'Version $_appVersion',
+        applicationVersion: 'Version $_appVersion (build ${UpdateService.build})',
         applicationLegalese: 'Free & open-source (GPLv3)\nNo ads • No tracking • 100% offline',
       );
 
@@ -491,6 +495,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
                 () => Share.share('I use Kelmo Scan — a free document scanner with Urdu OCR. Download: $_apkLink')),
             item(Icons.feedback_outlined, 'Feature Request / Bug ...',
                 () => Share.share('Kelmo Scan $_appVersion — feature request / bug:\n\n')),
+            item(Icons.system_update, 'Check for updates', () => UpdateService.manualCheck(context)),
             item(Icons.info_outline, 'About Kelmo Scan', _about),
           ]),
         ),

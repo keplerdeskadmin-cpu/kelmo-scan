@@ -249,6 +249,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _pref(p, 'Restore', icon: Icons.restore, summary: 'Replaces everything currently in the app', onTap: _busy ? null : _restore),
 
           _section(p, 'About'),
+          _pref(p, 'Check for updates automatically', icon: Icons.system_update,
+              summary: 'Once a day, only asks GitHub for a newer version',
+              check: _s.autoUpdateCheck, onCheck: (v) => setState(() => _s.autoUpdateCheck = v)),
           _pref(p, 'Privacy dashboard', icon: Icons.shield, summary: 'No ads • No tracking • 100% local',
               onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PrivacyScreen()))),
           _pref(p, 'Kelmo Scan', icon: Icons.info, summary: 'Free & open-source (GPLv3) • No ads • No subscription'),

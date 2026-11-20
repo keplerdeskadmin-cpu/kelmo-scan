@@ -34,8 +34,22 @@ jobs:
       - name: Get packages
         run: flutter pub get
 
+      - name: Release key
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/kelmo-release.jks"
+            echo "KELMO_KEYSTORE=$RUNNER_TEMP/kelmo-release.jks" >> "$GITHUB_ENV"
+            echo "Using the fixed Kelmo release key"
+          else
+            echo "::warning::KEYSTORE_B64 secret missing - building with a temporary debug key"
+          fi
+
       - name: Build APK
-        run: flutter build apk --release --split-per-abi
+        env:
+          KELMO_KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+        run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }} --dart-define=BUILD_RUN=${{ github.run_number }}
 
       - name: Collect APKs
         run: |

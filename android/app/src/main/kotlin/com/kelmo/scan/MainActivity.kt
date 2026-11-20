@@ -107,6 +107,28 @@ class MainActivity : FlutterFragmentActivity() {   // BiometricPrompt needs a Fr
                     prompt.authenticate(info)
                     return@setMethodCallHandler
                 }
+                if (call.method == "abi") {
+                    result.success(android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "")
+                    return@setMethodCallHandler
+                }
+                if (call.method == "installApk") {
+                    try {
+                        if (android.os.Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+                            startActivity(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                android.net.Uri.parse("package:$packageName")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                            result.success("permission")
+                            return@setMethodCallHandler
+                        }
+                        val f = File(call.argument<String>("path")!!)
+                        val uri = FileProvider.getUriForFile(this, "$packageName.kelmo.files", f)
+                        startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK))
+                        result.success("ok")
+                    } catch (e: Throwable) {
+                        result.error("INSTALL", e.message, null)
+                    }
+                    return@setMethodCallHandler
+                }
                 if (call.method == "shutter") {
                     try { MediaActionSound().play(MediaActionSound.SHUTTER_CLICK) } catch (_: Throwable) {}
                     result.success(true)

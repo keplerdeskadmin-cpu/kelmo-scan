@@ -100,6 +100,11 @@ class AppSettings {
   bool get syncWarnMobile => _p.getBool('syncWarnMobile') ?? true;
   set syncWarnMobile(bool v) { _p.setBool('syncWarnMobile', v); }
 
+  bool get autoUpdateCheck => _p.getBool('autoUpdateCheck') ?? true;
+  set autoUpdateCheck(bool v) { _p.setBool('autoUpdateCheck', v); }
+  int get lastUpdateCheck => _p.getInt('lastUpdateCheck') ?? 0;
+  set lastUpdateCheck(int v) { _p.setInt('lastUpdateCheck', v); }
+
   bool get homeSortAsc => _p.getBool('homeSortAsc') ?? false;
   set homeSortAsc(bool v) { _p.setBool('homeSortAsc', v); }
 

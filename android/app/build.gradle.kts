@@ -29,11 +29,22 @@ android {
         versionName = flutter.versionName
     }
 
+    // Fixed release key (from GitHub secrets in CI) so every new APK installs as an UPDATE.
+    val ks = System.getenv("KELMO_KEYSTORE")
+    signingConfigs {
+        if (ks != null && file(ks).exists()) {
+            create("kelmo") {
+                storeFile = file(ks)
+                storePassword = System.getenv("KELMO_KEYSTORE_PASS")
+                keyAlias = "kelmo"
+                keyPassword = System.getenv("KELMO_KEYSTORE_PASS")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("kelmo") ?: signingConfigs.getByName("debug")
             // OpenCV + tesseract4android use JNI; keep all classes/names intact.
             isMinifyEnabled = false
             isShrinkResources = false
