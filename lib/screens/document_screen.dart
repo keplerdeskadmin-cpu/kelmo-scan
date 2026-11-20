@@ -117,8 +117,14 @@ class _DocumentScreenState extends State<DocumentScreen> {
   }
 
   Future<void> _markupPage(ScanPage pg, {bool redact = false, bool stamp = false}) async {
-    final out = await Navigator.push<String>(context, MaterialPageRoute(
-        builder: (_) => redact ? RedactScreen(imagePath: pg.imagePath) : MarkupScreen(imagePath: pg.imagePath, openStamp: stamp)));
+    if (!redact) {
+      if (await editPageMarkup(context, pg, stamp: stamp)) {
+        unawaited(OcrIndexer.run());
+        await _load();
+      }
+      return;
+    }
+    final out = await Navigator.push<String>(context, MaterialPageRoute(builder: (_) => RedactScreen(imagePath: pg.imagePath)));
     if (out == null) return;
     setState(() => _busy = true);
     final thumb = await ImageProcessingService.instance.applyFilter(out, FilterMode.original, maxSide: 360);

@@ -19,6 +19,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -142,6 +143,7 @@ Future<Uint8List?> photoToStamp(String path) async {
     for (var x = 0; x < w; x++) {
       final i = (y * w + x) * 4;
       final r = raw[i], g = raw[i + 1], b = raw[i + 2];
+      if (raw[i + 3] < 40) continue; // already transparent (PNG stamp)
       final mx = math.max(r, math.max(g, b)), mn = math.min(r, math.min(g, b));
       final lum = (r * 299 + g * 587 + b * 114) ~/ 1000;
       final sat = mx == 0 ? 0.0 : (mx - mn) / mx;
@@ -241,12 +243,22 @@ class _StampPickerScreenState extends State<StampPickerScreen> {
     if (mounted) Navigator.pop(context, png);
   }
 
+  /// Browse: any picture already on the phone (gallery / files) becomes a stamp.
+  Future<void> _browse() async {
+    final r = await FilePicker.platform.pickFiles(type: FileType.image);
+    final path = r?.files.single.path;
+    if (path != null) await _fromPhoto(path);
+  }
+
   Future<void> _scan() async {
     final x = await ImagePicker().pickImage(source: ImageSource.camera, imageQuality: 95);
-    if (x == null) return;
+    if (x != null) await _fromPhoto(x.path);
+  }
+
+  Future<void> _fromPhoto(String path) async {
     setState(() => _busy = true);
     try {
-      final png = await photoToStamp(x.path);
+      final png = await photoToStamp(path);
       if (png == null) {
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No stamp found — put the stamp on white paper')));
         return;
@@ -302,6 +314,15 @@ class _StampPickerScreenState extends State<StampPickerScreen> {
               ),
             ),
           ]),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(foregroundColor: p.accent, minimumSize: const Size.fromHeight(48)),
+              onPressed: _browse,
+              icon: const Icon(Icons.folder_open),
+              label: const Text('Browse (picture from phone)'),
+            ),
+          ),
           if (_mine.isNotEmpty) ...[
             _head(p, 'My Stamps (long-press to delete)'),
             GridView.builder(

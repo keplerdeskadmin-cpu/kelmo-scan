@@ -24,7 +24,6 @@ import '../services/backup_service.dart';
 import '../services/import_service.dart';
 import '../services/update_service.dart';
 import '../services/document_repository.dart';
-import '../services/image_processing_service.dart';
 import '../services/pdf_exporter.dart';
 import '../theme/app_themes.dart';
 import '../widgets/cs_bars.dart';
@@ -39,7 +38,7 @@ import 'settings_screen.dart';
 import 'share_screen.dart';
 import 'trash_screen.dart';
 
-const _appVersion = '1.6.1';
+const _appVersion = '1.7';
 const _apkLink = 'https://github.com/keplerdeskadmin-cpu/kelmo-scan/releases/latest/download/KelmoScan-arm64.apk';
 
 /// "Oct-21, 15:47" — the date style used in the document list.
@@ -360,15 +359,10 @@ class _GalleryScreenState extends State<GalleryScreen> {
     if (id == null || !mounted) return;
     final pg = (await _repo.pages(id)).first;
     if (!mounted) return;
-    final out = await Navigator.push<String>(context, MaterialPageRoute(builder: (_) => MarkupScreen(imagePath: pg.imagePath, openStamp: true)));
-    if (out == null) return;
-    await _work(() async {
-      final thumb = await ImageProcessingService.instance.applyFilter(out, FilterMode.original, maxSide: 360);
-      await _repo.replacePage(pg.id, ScannedPage(origPath: out, finalPath: out, thumbPath: thumb, filter: 'original',
-          corners: const [Offset(0, 0), Offset(1, 0), Offset(1, 1), Offset(0, 1)]));
-      imageCache.clear();
+    if (await editPageMarkup(context, pg, stamp: true)) {
       _snack('Stamp added');
-    });
+      _reload();
+    }
   }
 
   Future<void> _quickOcr() async {

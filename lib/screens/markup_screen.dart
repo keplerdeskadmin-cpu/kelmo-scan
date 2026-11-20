@@ -21,10 +21,14 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
+import 'dart:convert';
+import '../models/scan_document.dart';
+import '../services/document_repository.dart';
 import '../services/image_processing_service.dart';
 import '../theme/app_themes.dart';
 import '../widgets/dialogs.dart';
 import '../widgets/stamp_maker.dart';
+import '../widgets/zoom_draw_area.dart';
 
 // ───────────────────────── model
 
@@ -54,6 +58,71 @@ class _Stamp extends _Item {
   Offset center; // normalised
   double widthFrac; // stamp width / image width
   double rotation = 0; // radians (two-finger turn)
+  String? file; // PNG name inside the page's markup folder once saved
+}
+
+double _r4(double v) => (v * 10000).roundToDouble() / 10000;
+
+Map<String, Object?> _itemToJson(_Item it) {
+  if (it is _Stroke) {
+    return {'t': 's', 'c': it.color.toARGB32(), 'w': it.width, 'o': it.opacity, 'm': it.mode,
+      'p': [for (final q in it.pts) ...[_r4(q.dx), _r4(q.dy)]]};
+  }
+  if (it is _Shape) {
+    return {'t': 'h', 'k': it.kind, 'a': [it.a.dx, it.a.dy], 'b': [it.b.dx, it.b.dy], 'c': it.color.toARGB32(), 'w': it.width};
+  }
+  final st = it as _Stamp;
+  return {'t': 'i', 'f': st.file, 'x': st.center.dx, 'y': st.center.dy, 'w': st.widthFrac, 'r': st.rotation};
+}
+
+Future<_Item?> _itemFromJson(Map<String, dynamic> j, String dir) async {
+  double d(Object? v) => (v as num).toDouble();
+  switch (j['t']) {
+    case 's':
+      final s = _Stroke(Color(j['c'] as int), d(j['w']), d(j['o']), mode: j['m'] as int? ?? 0);
+      final p = (j['p'] as List).map((e) => d(e)).toList();
+      for (var i = 0; i + 1 < p.length; i += 2) { s.pts.add(Offset(p[i], p[i + 1])); }
+      return s;
+    case 'h':
+      final a = j['a'] as List, b = j['b'] as List;
+      return _Shape(j['k'] as String, Offset(d(a[0]), d(a[1])), Offset(d(b[0]), d(b[1])), Color(j['c'] as int), d(j['w']));
+    case 'i':
+      final f = File('$dir/${j['f']}');
+      if (!f.existsSync()) return null;
+      final st = _Stamp(await _decode(await f.readAsBytes()), Offset(d(j['x']), d(j['y'])), d(j['w']))
+        ..rotation = d(j['r'])
+        ..file = j['f'] as String;
+      return st;
+  }
+  return null;
+}
+
+/// Result of the markup screen: the baked image + the editable layers (JSON).
+class MarkupResult {
+  const MarkupResult(this.image, this.layers);
+  final String image, layers;
+}
+
+/// Opens markup for a stored page so it stays editable: the page before markup is kept as
+/// base.jpg and the drawings / stamps as layers. Returns true when the page changed.
+Future<bool> editPageMarkup(BuildContext context, ScanPage pg, {bool stamp = false}) async {
+  final repo = DocumentRepository.instance;
+  final dir = repo.markupDir(pg)..createSync(recursive: true);
+  final base = File('${dir.path}/base.jpg');
+  final hasLayers = pg.markup != null && base.existsSync();
+  if (!hasLayers) await File(pg.imagePath).copy(base.path);
+  imageCache.clear();
+  if (!context.mounted) return false;
+  final r = await Navigator.push<MarkupResult>(context, MaterialPageRoute(
+      builder: (_) => MarkupScreen(imagePath: base.path, openStamp: stamp, layers: hasLayers ? pg.markup : null, layerDir: dir.path)));
+  if (r == null) {
+    if (!hasLayers && dir.existsSync()) dir.deleteSync(recursive: true);
+    return false;
+  }
+  final thumb = await ImageProcessingService.instance.applyFilter(r.image, FilterMode.original, maxSide: 360);
+  await repo.saveMarkup(pg, r.image, thumb, r.layers);
+  imageCache.clear();
+  return true;
 }
 
 class _MarkPainter extends CustomPainter {
@@ -243,9 +312,11 @@ Future<ui.Image> _textImage(String text, Color color) {
 
 /// Pen, signatures, images and text on a page. Pops the new image path (null = cancelled).
 class MarkupScreen extends StatefulWidget {
-  const MarkupScreen({super.key, required this.imagePath, this.openStamp = false});
-  final String imagePath;
+  const MarkupScreen({super.key, required this.imagePath, this.openStamp = false, this.layers, this.layerDir});
+  final String imagePath; // page WITHOUT markup (base)
   final bool openStamp; // go straight to the stamp picker
+  final String? layers; // saved layers to edit again
+  final String? layerDir; // folder for stamp PNGs
   @override
   State<MarkupScreen> createState() => _MarkupScreenState();
 }
@@ -270,6 +341,19 @@ class _MarkupScreenState extends State<MarkupScreen> {
   Offset? _startFocal, _startCenter;
   double _startW = 0, _startRot = 0;
   int _rev = 0;
+
+  Future<void> _loadLayers() async {
+    final l = widget.layers, dir = widget.layerDir;
+    if (l == null || dir == null) return;
+    try {
+      final items = <_Item>[];
+      for (final j in jsonDecode(l) as List) {
+        final it = await _itemFromJson(j as Map<String, dynamic>, dir);
+        if (it != null) items.add(it);
+      }
+      if (mounted) setState(() => _items.addAll(items));
+    } catch (_) {}
+  }
 
   Future<void> _loadBase() async {
     final codec = await ui.instantiateImageCodec(await File(widget.imagePath).readAsBytes(), targetWidth: 1400);
@@ -300,6 +384,7 @@ class _MarkupScreenState extends State<MarkupScreen> {
     );
     _loadSigs();
     _loadBase();
+    _loadLayers();
     if (widget.openStamp) WidgetsBinding.instance.addPostFrameCallback((_) => _stamp());
   }
 
@@ -380,7 +465,7 @@ class _MarkupScreenState extends State<MarkupScreen> {
   void _deleteSel() { if (_sel != null) setState(() { _items.remove(_sel); _sel = null; }); }
 
   Future<void> _save() async {
-    if (_items.isEmpty) { Navigator.pop(context); return; }
+    if (_items.isEmpty && widget.layers == null) { Navigator.pop(context); return; }
     setState(() { _busy = true; _sel = null; });
     try {
       final base = await _decode(await File(widget.imagePath).readAsBytes());
@@ -394,7 +479,24 @@ class _MarkupScreenState extends State<MarkupScreen> {
       final png = File('${tmp.path}/markup_${DateTime.now().microsecondsSinceEpoch}.png');
       await png.writeAsBytes(await _png(img));
       final jpg = await ImageProcessingService.instance.shrink(png.path, 100000, 92);
-      if (mounted) Navigator.pop(context, jpg);
+      // layers: stamp images as PNG files next to base.jpg
+      final dir = widget.layerDir ?? tmp.path;
+      var n = 0;
+      for (final it in _items) {
+        if (it is _Stamp && it.file == null) {
+          it.file = 'st_${DateTime.now().microsecondsSinceEpoch}_${n++}.png';
+          await File('$dir/${it.file}').writeAsBytes(await _png(it.img));
+        }
+      }
+      final used = {for (final it in _items) if (it is _Stamp) it.file};
+      if (widget.layerDir != null) {
+        for (final f in Directory(dir).listSync().whereType<File>()) {
+          final name = f.uri.pathSegments.last;
+          if (name.startsWith('st_') && !used.contains(name)) f.deleteSync();
+        }
+      }
+      final layers = jsonEncode([for (final it in _items) _itemToJson(it)]);
+      if (mounted) Navigator.pop(context, MarkupResult(jpg, layers));
     } catch (e) {
       if (mounted) { setState(() => _busy = false); _snack('Could not save: $e'); }
     }
@@ -417,66 +519,68 @@ class _MarkupScreenState extends State<MarkupScreen> {
         ],
       ),
       body: Stack(children: [
-        Center(
-          child: Padding(
-            padding: const EdgeInsets.all(10),
-            child: AspectRatio(
-              aspectRatio: _aspect,
-              child: LayoutBuilder(builder: (_, box) {
-                final size = Size(box.maxWidth, box.maxHeight);
-                Offset norm(Offset o) =>
-                    Offset((o.dx / size.width).clamp(0.0, 1.0).toDouble(), (o.dy / size.height).clamp(0.0, 1.0).toDouble());
-                return GestureDetector(
-                  onTapUp: _pen ? null : (d) => setState(() => _sel = _hit(norm(d.localPosition), size)),
-                  onScaleStart: (d) {
-                    final n = norm(d.localFocalPoint);
-                    if (_pen) {
-                      switch (_tool) {
-                        case 'eraser':
-                          _eraseAt(n, size);
-                        case 'line' || 'arrow' || 'rect' || 'circle':
-                          _curShape = _Shape(_tool, n, n, _color, _size / 1500);
-                          setState(() => _push(_curShape!));
-                        default:
-                          final mode = _tool == 'highlight' ? 1 : _tool == 'blur' ? 2 : 0;
-                          final w = mode == 0 ? _size / 1000 : _size * 2.2 / 1000;
-                          _cur = _Stroke(mode == 1 ? (_color == Colors.white ? Colors.yellow : _color) : _color, w, _opacity / 100, mode: mode)
-                            ..pts.add(n);
-                          setState(() => _push(_cur!));
-                      }
-                    } else {
-                      final s = _hit(n, size) ?? _sel;
-                      setState(() => _sel = s);
-                      if (s != null) { _startFocal = n; _startCenter = s.center; _startW = s.widthFrac; _startRot = s.rotation; }
-                    }
-                  },
-                  onScaleUpdate: (d) {
-                    final n = norm(d.localFocalPoint);
-                    if (_pen) {
-                      if (d.pointerCount != 1) return;
-                      if (_tool == 'eraser') {
-                        _eraseAt(n, size);
-                      } else if (_curShape != null) {
-                        setState(() { _curShape!.b = n; _rev++; });
-                      } else if (_cur != null) {
-                        setState(() { _cur!.pts.add(n); _rev++; });
-                      }
-                    } else if (_sel != null && _startFocal != null) {
-                      setState(() {
-                        _sel!.center = _startCenter! + (n - _startFocal!);
-                        _sel!.widthFrac = (_startW * d.scale).clamp(.05, 1.5).toDouble();
-                        if (d.pointerCount > 1) _sel!.rotation = _startRot + d.rotation;
-                      });
-                    }
-                  },
-                  onScaleEnd: (_) { _cur = null; _curShape = null; _startFocal = null; },
-                  child: Stack(children: [
-                    Positioned.fill(child: Image.file(File(widget.imagePath), fit: BoxFit.fill, cacheWidth: 1600)),
-                    Positioned.fill(child: CustomPaint(painter: _MarkPainter(_items, _aspect, selected: _sel, rev: _rev, base: _base))),
-                  ]),
-                );
-              }),
-            ),
+        Padding(
+          padding: const EdgeInsets.all(10),
+          child: ZoomDrawArea(
+            aspect: _aspect,
+            onTap: _pen ? null : (n, size) => setState(() => _sel = _hit(n, size)),
+            onOneStart: (n, size) {
+              if (_pen) {
+                switch (_tool) {
+                  case 'eraser':
+                    _eraseAt(n, size);
+                  case 'line' || 'arrow' || 'rect' || 'circle':
+                    _curShape = _Shape(_tool, n, n, _color, _size / 1500);
+                    setState(() => _push(_curShape!));
+                  default:
+                    final mode = _tool == 'highlight' ? 1 : _tool == 'blur' ? 2 : 0;
+                    final w = mode == 0 ? _size / 1000 : _size * 2.2 / 1000;
+                    _cur = _Stroke(mode == 1 && _color == Colors.white ? Colors.yellow : _color, w, _opacity / 100, mode: mode)
+                      ..pts.add(n);
+                    setState(() => _push(_cur!));
+                }
+              } else {
+                final s = _hit(n, size);
+                setState(() => _sel = s);
+                if (s != null) { _startFocal = n; _startCenter = s.center; }
+              }
+            },
+            onOneUpdate: (n, size) {
+              if (_pen) {
+                if (_tool == 'eraser') {
+                  _eraseAt(n, size);
+                } else if (_curShape != null) {
+                  setState(() { _curShape!.b = n; _rev++; });
+                } else if (_cur != null) {
+                  setState(() { _cur!.pts.add(n); _rev++; });
+                }
+              } else if (_sel != null && _startFocal != null) {
+                setState(() => _sel!.center = _startCenter! + (n - _startFocal!));
+              }
+            },
+            onOneEnd: () { _cur = null; _curShape = null; _startFocal = null; },
+            onOneCancel: () {
+              final it = _cur ?? _curShape;
+              if (it != null) setState(() => _items.remove(it));
+              _cur = null; _curShape = null; _startFocal = null;
+            },
+            onTwoStart: (n, size) {
+              if (_pen || _sel == null) return false; // two fingers zoom the page
+              _startFocal = n; _startCenter = _sel!.center; _startW = _sel!.widthFrac; _startRot = _sel!.rotation;
+              return true;
+            },
+            onTwoUpdate: (n, scale, rot) {
+              if (_sel == null || _startFocal == null) return;
+              setState(() {
+                _sel!.center = _startCenter! + (n - _startFocal!);
+                _sel!.widthFrac = (_startW * scale).clamp(.05, 1.5).toDouble();
+                _sel!.rotation = _startRot + rot;
+              });
+            },
+            builder: (size) => Stack(children: [
+              Positioned.fill(child: Image.file(File(widget.imagePath), fit: BoxFit.fill, cacheWidth: 2000)),
+              Positioned.fill(child: CustomPaint(painter: _MarkPainter(_items, _aspect, selected: _sel, rev: _rev, base: _base))),
+            ]),
           ),
         ),
         if (_busy) Positioned.fill(child: Container(color: Colors.black45, child: const Center(child: CircularProgressIndicator(color: Colors.white)))),

@@ -50,7 +50,7 @@ class DocumentRepository {
     _root = Directory(p.join((await getApplicationDocumentsDirectory()).path, 'scans'))..createSync(recursive: true);
     _db = await openDatabase(
       p.join(await getDatabasesPath(), 'kelmo_scan.db'),
-      version: 6,
+      version: 7,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onUpgrade: (db, old, _) async {
         if (old < 2) await db.execute('ALTER TABLE pages ADD COLUMN ocr_text TEXT');
@@ -65,6 +65,7 @@ class DocumentRepository {
           await db.execute('ALTER TABLE pages ADD COLUMN title TEXT');
           await db.execute('ALTER TABLE documents ADD COLUMN pdf_settings TEXT');
         }
+        if (old < 7) await db.execute('ALTER TABLE pages ADD COLUMN markup TEXT');
       },
       onCreate: (db, _) async {
         await db.execute('CREATE TABLE folders(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created INTEGER NOT NULL)');
@@ -74,7 +75,7 @@ class DocumentRepository {
         await db.execute('CREATE TABLE pages(id INTEGER PRIMARY KEY AUTOINCREMENT, '
             'doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE, position INTEGER NOT NULL, '
             'image_path TEXT NOT NULL, thumb_path TEXT NOT NULL, orig_path TEXT NOT NULL, '
-            'corners TEXT NOT NULL, filter TEXT NOT NULL, bytes INTEGER NOT NULL, ocr_text TEXT, note TEXT, title TEXT)');
+            'corners TEXT NOT NULL, filter TEXT NOT NULL, bytes INTEGER NOT NULL, ocr_text TEXT, note TEXT, title TEXT, markup TEXT)');
         await db.execute('CREATE INDEX idx_pages_doc ON pages(doc_id, position)');
         await _tagTables(db);
         final now = DateTime.now().millisecondsSinceEpoch;
@@ -249,9 +250,35 @@ class DocumentRepository {
     await _db.update('pages', {
       'image_path': f.$1, 'thumb_path': f.$2, 'orig_path': f.$3,
       'corners': sp.cornersJson, 'filter': sp.filter, 'bytes': File(f.$1).lengthSync(), 'ocr_text': null,
+      'markup': null, // new crop / filter → markup layers start fresh
     }, where: 'id = ?', whereArgs: [pageId]);
     for (final x in [old.imagePath, old.thumbPath, old.origPath]) { _rm(x); }
+    _rmMarkup(old);
     await _touch(old.docId, {});
+  }
+
+  // ───────── editable markup (layers kept so the page can be edited again)
+  /// mk_<pageId> inside the document folder: base.jpg (page before markup) + stamp PNGs.
+  Directory markupDir(ScanPage pg) => Directory(p.join(_root.path, '${pg.docId}', 'mk_${pg.id}'));
+
+  void _rmMarkup(ScanPage pg) {
+    final d = markupDir(pg);
+    if (d.existsSync()) d.deleteSync(recursive: true);
+  }
+
+  /// Saves the marked-up image; keeps the original photo, corners and filter for a later re-crop.
+  Future<void> saveMarkup(ScanPage pg, String finalPath, String thumbPath, String layersJson) async {
+    final dir = Directory(p.join(_root.path, '${pg.docId}'))..createSync(recursive: true);
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    final img = p.join(dir.path, 'page_$stamp.jpg'), th = p.join(dir.path, 'thumb_$stamp.jpg');
+    await File(finalPath).copy(img);
+    await File(thumbPath).copy(th);
+    await _db.update('pages', {
+      'image_path': img, 'thumb_path': th, 'bytes': File(img).lengthSync(), 'ocr_text': null, 'markup': layersJson,
+    }, where: 'id = ?', whereArgs: [pg.id]);
+    _rm(pg.imagePath);
+    _rm(pg.thumbPath);
+    await _touch(pg.docId, {});
   }
 
   Future<void> setPageTitle(int pageId, String? title) =>
@@ -307,6 +334,7 @@ class DocumentRepository {
   /// Returns pages left; deletes the whole document when none remain.
   Future<int> deletePage(ScanPage pg) async {
     for (final x in [pg.imagePath, pg.thumbPath, pg.origPath]) { _rm(x); }
+    _rmMarkup(pg);
     await _db.delete('pages', where: 'id = ?', whereArgs: [pg.id]);
     final left = Sqflite.firstIntValue(await _db.rawQuery('SELECT COUNT(*) FROM pages WHERE doc_id = ?', [pg.docId])) ?? 0;
     if (left == 0) { await deleteDocument(pg.docId); } else { await _touch(pg.docId, {}); }
@@ -371,6 +399,12 @@ class DocumentRepository {
         final rel = p.relative(abs, from: _root.path).replaceAll('\\', '/');
         m[k] = rel;
         files['files/$rel'] = abs;
+      }
+      final mk = markupDir(ScanPage.fromRow(r));
+      if (mk.existsSync()) {
+        for (final f in mk.listSync().whereType<File>()) {
+          files['files/${p.relative(f.path, from: _root.path).replaceAll('\\', '/')}'] = f.path;
+        }
       }
       pages.add(m);
     }

@@ -23,6 +23,7 @@ import '../services/import_service.dart';
 import 'package:path_provider/path_provider.dart';
 import '../theme/app_themes.dart';
 import '../widgets/border_adjust_overlay.dart';
+import '../widgets/zoom_draw_area.dart';
 
 /// The 4 looks shown in the top bar (+ the Color switch).
 enum _Look { original, photo, docs, clear }
@@ -297,19 +298,15 @@ class _EditScanScreenState extends State<EditScanScreen> {
                     : _shown == null
                         ? const SizedBox()
                         : _erasing
-                            ? AspectRatio(
-                                aspectRatio: _flatAspect,
-                                child: LayoutBuilder(builder: (_, box) {
-                                  Offset n(Offset o) => Offset(o.dx / box.maxWidth, o.dy / box.maxHeight);
-                                  return GestureDetector(
-                                    onPanStart: (d) => setState(() => _wipes.add(([n(d.localPosition)], _wipeSize / 1000))),
-                                    onPanUpdate: (d) => setState(() => _wipes.last.$1.add(n(d.localPosition))),
-                                    child: Stack(fit: StackFit.expand, children: [
-                                      Image.file(File(_shown!), key: ValueKey(_shown), fit: BoxFit.fill, gaplessPlayback: true),
-                                      CustomPaint(painter: _WipePainter(_wipes, rev: _wipes.fold(0, (a, w) => a + w.$1.length))),
-                                    ]),
-                                  );
-                                }),
+                            ? ZoomDrawArea(
+                                aspect: _flatAspect,
+                                onOneStart: (n, _) => setState(() => _wipes.add(([n], _wipeSize / 1000))),
+                                onOneUpdate: (n, _) { if (_wipes.isNotEmpty) setState(() => _wipes.last.$1.add(n)); },
+                                onOneCancel: () { if (_wipes.isNotEmpty) setState(() => _wipes.removeLast()); },
+                                builder: (_) => Stack(fit: StackFit.expand, children: [
+                                  Image.file(File(_shown!), key: ValueKey(_shown), fit: BoxFit.fill, gaplessPlayback: true),
+                                  CustomPaint(painter: _WipePainter(_wipes, rev: _wipes.fold(0, (a, w) => a + w.$1.length))),
+                                ]),
                               )
                             : GestureDetector(
                                 onLongPressStart: (_) => setState(() => _compare = true),

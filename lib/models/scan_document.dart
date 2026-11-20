@@ -76,7 +76,8 @@ class ScanDocument {
 /// A page stored in the database.
 class ScanPage {
   ScanPage({required this.id, required this.docId, required this.position, required this.imagePath,
-      required this.thumbPath, required this.origPath, required this.corners, required this.filter, this.note, this.title});
+      required this.thumbPath, required this.origPath, required this.corners, required this.filter, this.note, this.title,
+      this.markup});
 
   factory ScanPage.fromRow(Map<String, Object?> r) => ScanPage(
         id: r['id'] as int,
@@ -92,12 +93,14 @@ class ScanPage {
         filter: r['filter'] as String,
         note: r['note'] as String?,
         title: r['title'] as String?,
+        markup: r['markup'] as String?,
       );
 
   final int id, docId, position;
   final String imagePath, thumbPath, origPath, filter;
   final List<Offset> corners;
   final String? note, title;
+  final String? markup; // JSON layers of the editable markup
 }
 
 /// Result returned by the edit screen (files are still in temp; repository copies them).
