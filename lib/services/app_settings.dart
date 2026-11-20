@@ -33,8 +33,8 @@ class AppSettings {
   String get lastRecipe => _p.getString('lastRecipe') ?? 'document';
   set lastRecipe(String v) { _p.setString('lastRecipe', v); }
 
-  String get ocrLang => _p.getString('ocrLang') ?? 'eng';
-  set ocrLang(String v) { _p.setString('ocrLang', v); }
+  String get ocrLang => _p.getString('ocrLang2') ?? 'auto';
+  set ocrLang(String v) { _p.setString('ocrLang2', v); }
 
   // ───────── Clear Scanner style settings
   String get themeMode => _p.getString('themeMode') ?? 'light'; // light | dark | system

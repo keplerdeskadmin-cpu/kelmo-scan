@@ -65,7 +65,8 @@ class ImportService {
   static Future<String> adjust(String path, double brightness, double contrast) async {
     final dir = await getTemporaryDirectory();
     final out = '${dir.path}/adj_${DateTime.now().microsecondsSinceEpoch}.jpg';
-    await _ch.invokeMethod('adjust', {'path': path, 'out': out, 'brightness': brightness, 'contrast': contrast});
+    // contrast around mid-grey: out = c*in + b + 128*(1-c)
+    await _ch.invokeMethod('adjust', {'path': path, 'out': out, 'brightness': brightness + 128 * (1 - contrast), 'contrast': contrast});
     return out;
   }
 

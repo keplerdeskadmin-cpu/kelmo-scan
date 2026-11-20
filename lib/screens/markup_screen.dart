@@ -24,6 +24,7 @@ import 'package:path_provider/path_provider.dart';
 import '../services/image_processing_service.dart';
 import '../theme/app_themes.dart';
 import '../widgets/dialogs.dart';
+import '../widgets/stamp_maker.dart';
 
 // ───────────────────────── model
 
@@ -173,8 +174,9 @@ Future<ui.Image> _textImage(String text, Color color) {
 
 /// Pen, signatures, images and text on a page. Pops the new image path (null = cancelled).
 class MarkupScreen extends StatefulWidget {
-  const MarkupScreen({super.key, required this.imagePath});
+  const MarkupScreen({super.key, required this.imagePath, this.openStamp = false});
   final String imagePath;
+  final bool openStamp; // go straight to the stamp picker
   @override
   State<MarkupScreen> createState() => _MarkupScreenState();
 }
@@ -202,6 +204,12 @@ class _MarkupScreenState extends State<MarkupScreen> {
       ImageStreamListener((info, _) { if (mounted) setState(() => _aspect = info.image.width / info.image.height); }),
     );
     _loadSigs();
+    if (widget.openStamp) WidgetsBinding.instance.addPostFrameCallback((_) => _stamp());
+  }
+
+  Future<void> _stamp() async {
+    final png = await Navigator.push<Uint8List>(context, MaterialPageRoute(builder: (_) => const StampPickerScreen()));
+    if (png != null) await _addStamp(await _decode(png), width: .4);
   }
 
   Future<void> _loadSigs() async {
@@ -226,6 +234,7 @@ class _MarkupScreenState extends State<MarkupScreen> {
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           ListTile(leading: const Icon(Icons.draw), title: const Text('Create Signature'), onTap: () => Navigator.pop(ctx, 'create')),
           ListTile(leading: const Icon(Icons.photo_camera), title: const Text('Scan your signature'), onTap: () => Navigator.pop(ctx, 'scan')),
+          ListTile(leading: const Icon(Icons.approval), title: const Text('Stamp'), onTap: () => Navigator.pop(ctx, 'stamp')),
           ListTile(leading: const Icon(Icons.image), title: const Text('Image'), onTap: () => Navigator.pop(ctx, 'image')),
           ListTile(leading: const Icon(Icons.text_fields), title: const Text('Text'), onTap: () => Navigator.pop(ctx, 'text')),
         ]),
@@ -249,6 +258,8 @@ class _MarkupScreenState extends State<MarkupScreen> {
         } finally {
           if (mounted) setState(() => _busy = false);
         }
+      case 'stamp':
+        await _stamp();
       case 'image':
         final x = await ImagePicker().pickImage(source: ImageSource.gallery);
         if (x != null) await _addStamp(await _decode(await File(x.path).readAsBytes()), width: .45);

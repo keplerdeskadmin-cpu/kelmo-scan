@@ -20,6 +20,7 @@ class OcrLang {
   const OcrLang(this.label, this.code);
   final String label, code; // code = Tesseract language(s), "+" combines
   static const all = [
+    OcrLang('Auto', 'auto'),
     OcrLang('English', 'eng'),
     OcrLang('Urdu', 'urd'),
     OcrLang('English + Urdu', 'eng+urd'),
@@ -37,7 +38,24 @@ class OcrService {
   }
 
   Future<String> recognize(String path, {String? langs}) async {
-    final r = await _ch.invokeMethod<String>('ocr', {'path': path, 'langs': langs ?? AppSettings.instance.ocrLang});
+    final l = langs ?? AppSettings.instance.ocrLang;
+    if (l == 'auto') return _auto(path);
+    final r = await _ch.invokeMethod<String>('ocr', {'path': path, 'langs': l});
     return (r ?? '').trim();
+  }
+
+  /// Auto: reads the page as English and as Urdu and keeps the one with more real words.
+  Future<String> _auto(String path) async {
+    final en = await recognize(path, langs: 'eng');
+    final enWords = RegExp(r'\b[A-Za-z]{3,}\b').allMatches(en).length;
+    final urduLetters = RegExp(r'[\u0621-\u064A\u067E\u0686\u0698\u06A9\u06AF\u06BA\u06BE\u06C1\u06CC\u06D2]').allMatches(en).length;
+    if (enWords >= 8 && urduLetters == 0) return en; // clearly an English page
+    final ur = await recognize(path, langs: 'urd');
+    final urWords = RegExp(r'[\u0621-\u06D2]{3,}').allMatches(ur).length;
+    if (urWords > enWords) {
+      final both = await recognize(path, langs: 'urd+eng'); // Urdu page that may also have English
+      return both.isEmpty ? ur : both;
+    }
+    return en;
   }
 }

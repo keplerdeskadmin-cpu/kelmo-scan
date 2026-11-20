@@ -87,7 +87,7 @@ class _OcrSheetState extends State<OcrSheet> {
           Text('Extracted Text', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: p.text, fontFamily: p.headingFont)),
           const Spacer(),
           DropdownButton<String>(
-            value: OcrLang.all.any((l) => l.code == _lang) ? _lang : 'eng',
+            value: OcrLang.all.any((l) => l.code == _lang) ? _lang : 'auto',
             underline: const SizedBox(), dropdownColor: p.surface,
             style: TextStyle(color: p.accent, fontWeight: FontWeight.w600),
             items: [for (final l in OcrLang.all) DropdownMenuItem(value: l.code, child: Text(l.label))],

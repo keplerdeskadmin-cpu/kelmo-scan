@@ -18,6 +18,7 @@ import 'package:flutter/material.dart';
 
 import '../models/scan_document.dart';
 import '../services/image_processing_service.dart';
+import '../services/import_service.dart';
 import '../theme/app_themes.dart';
 import '../widgets/border_adjust_overlay.dart';
 
@@ -55,6 +56,10 @@ class _EditScanScreenState extends State<EditScanScreen> {
   bool _border = true, _busy = false, _compare = false;
   _Look _look = _Look.docs;
   bool _color = true;
+  double _bright = 0, _contrast = 1; // Adjust: brightness -100..100, contrast 0.5..2
+  bool get _adjusted => _bright != 0 || _contrast != 1;
+
+  Future<String> _adj(String path) => _adjusted ? ImportService.adjust(path, _bright, _contrast) : Future.value(path);
 
   @override
   void initState() {
@@ -142,7 +147,7 @@ class _EditScanScreenState extends State<EditScanScreen> {
 
   // ───────── step 2: filter
   Future<void> _render() async {
-    final out = await _svc.applyFilter(_flat!, _mode, maxSide: 1800);
+    final out = await _adj(await _svc.applyFilter(_flat!, _mode, maxSide: 1800));
     if (mounted) setState(() => _shown = out);
   }
 
@@ -169,10 +174,66 @@ class _EditScanScreenState extends State<EditScanScreen> {
     }
   }
 
+  /// Adjust Image: brightness + contrast sliders (applied on top of the filter).
+  Future<void> _adjust() async {
+    final p = context.pal;
+    Future<void> apply() async {
+      if (_busy) return;
+      setState(() => _busy = true);
+      try { await _render(); } finally { if (mounted) setState(() => _busy = false); }
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.white,
+      barrierColor: Colors.transparent,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, set) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Row(children: [
+                const Text('Adjust Image', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+                const Spacer(),
+                TextButton(
+                  onPressed: () { set(() { _bright = 0; _contrast = 1; }); apply(); },
+                  child: const Text('RESET'),
+                ),
+              ]),
+              Row(children: [
+                const Icon(Icons.brightness_6, color: Color(0xFF5F6666)),
+                const SizedBox(width: 8),
+                const SizedBox(width: 78, child: Text('Brightness')),
+                Expanded(
+                  child: Slider(
+                    activeColor: p.accent, min: -100, max: 100, divisions: 40, value: _bright,
+                    label: _bright.round().toString(),
+                    onChanged: (v) => set(() => _bright = v), onChangeEnd: (_) => apply(),
+                  ),
+                ),
+              ]),
+              Row(children: [
+                const Icon(Icons.contrast, color: Color(0xFF5F6666)),
+                const SizedBox(width: 8),
+                const SizedBox(width: 78, child: Text('Contrast')),
+                Expanded(
+                  child: Slider(
+                    activeColor: p.accent, min: .5, max: 2, divisions: 30, value: _contrast,
+                    label: '${(_contrast * 100).round()}%',
+                    onChanged: (v) => set(() => _contrast = v), onChangeEnd: (_) => apply(),
+                  ),
+                ),
+              ]),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _finish() async {
     setState(() => _busy = true);
-    final full = await _svc.applyFilter(_flat!, _mode); // full resolution
-    final thumb = await _svc.applyFilter(_flat!, _mode, maxSide: 360);
+    final full = await _adj(await _svc.applyFilter(_flat!, _mode)); // full resolution
+    final thumb = await _adj(await _svc.applyFilter(_flat!, _mode, maxSide: 360));
     if (!mounted) return;
     Navigator.pop(
       context,
@@ -310,7 +371,7 @@ class _EditScanScreenState extends State<EditScanScreen> {
               b(Icons.rotate_left, 'Rotate left', () => _rotateFlat(false)),
               b(Icons.rotate_right, 'Rotate right', () => _rotateFlat(true)),
               b(Icons.cleaning_services_outlined, 'Eraser', () => _snack('Eraser is coming in the next update')),
-              b(Icons.tune, 'Adjust', () => _snack('Brightness / contrast is coming in the next update')),
+              b(Icons.tune, 'Adjust', _adjust),
               const Spacer(),
               b(Icons.check, 'Done', _flat == null ? null : _finish),
             ],

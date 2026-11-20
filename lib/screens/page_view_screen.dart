@@ -79,10 +79,10 @@ class _PageViewScreenState extends State<PageViewScreen> {
     if (mounted) setState(() => _busy = false);
   }
 
-  Future<void> _markup({bool redact = false}) async {
+  Future<void> _markup({bool redact = false, bool stamp = false}) async {
     final pg = _pg;
     final out = await Navigator.push<String>(context, MaterialPageRoute(
-        builder: (_) => redact ? RedactScreen(imagePath: pg.imagePath) : MarkupScreen(imagePath: pg.imagePath)));
+        builder: (_) => redact ? RedactScreen(imagePath: pg.imagePath) : MarkupScreen(imagePath: pg.imagePath, openStamp: stamp)));
     if (out == null) return;
     setState(() => _busy = true);
     final thumb = await ImageProcessingService.instance.applyFilter(out, FilterMode.original, maxSide: 360);
@@ -160,9 +160,11 @@ class _PageViewScreenState extends State<PageViewScreen> {
               'title' => _pageTitle(),
               'delete' => _delete(),
               'redact' => _markup(redact: true),
+              'stamp' => _markup(stamp: true),
               _ => runMoreAction(context, v, [_pg], widget.title),
             },
             itemBuilder: (_) => [
+              csMenuItem('stamp', Icons.approval, 'Add Stamp'),
               csMenuItem('rotate', Icons.rotate_right, 'Rotate page'),
               csMenuItem('title', Icons.title, 'Page Title'),
               csMenuItem('delete', Icons.delete, 'Delete page'),
