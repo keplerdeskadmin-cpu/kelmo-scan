@@ -36,6 +36,14 @@ class AppSettings {
   String get ocrLang => _p.getString('ocrLang') ?? 'eng';
   set ocrLang(String v) { _p.setString('ocrLang', v); }
 
+  /// Home list: false = list (default), true = grid.
+  bool get homeGrid => _p.getBool('homeGrid') ?? false;
+  set homeGrid(bool v) { _p.setBool('homeGrid', v); }
+
+  /// Home sort: date_desc (default), date_asc, name_asc, name_desc, size_desc.
+  String get homeSort => _p.getString('homeSort') ?? 'date_desc';
+  set homeSort(String v) { _p.setString('homeSort', v); }
+
   PdfSize get pdfSize =>
       PdfSize.values.firstWhere((s) => s.name == _p.getString('pdfSize'), orElse: () => PdfSize.a4);
   set pdfSize(PdfSize v) { _p.setString('pdfSize', v.name); }

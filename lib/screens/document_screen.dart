@@ -69,8 +69,8 @@ class _DocumentScreenState extends State<DocumentScreen> {
   }
 
   Future<void> _deleteDoc() async {
-    if (await confirm(context, 'Delete document?', 'All ${_pages.length} pages will be removed.')) {
-      await _repo.deleteDocument(_doc!.id);
+    if (await confirm(context, 'Move to Trash?', 'You can restore it from Trash in the menu.')) {
+      await _repo.trashDocument(_doc!.id);
       if (mounted) Navigator.pop(context);
     }
   }

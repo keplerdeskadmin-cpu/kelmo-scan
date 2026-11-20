@@ -19,7 +19,7 @@ import 'app_themes.dart';
 
 /// Holds the active theme and persists the choice.
 class ThemeProvider extends ChangeNotifier {
-  AppThemeId _id = AppThemeId.royalNavy;
+  AppThemeId _id = AppThemeId.clearTeal;
   AppThemeId get id => _id;
   AppPalette get palette => AppThemes.all[_id]!;
   ThemeData get theme => AppThemes.build(palette);
@@ -27,7 +27,7 @@ class ThemeProvider extends ChangeNotifier {
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     final saved = prefs.getString('theme');
-    _id = AppThemeId.values.firstWhere((e) => e.name == saved, orElse: () => AppThemeId.royalNavy);
+    _id = AppThemeId.values.firstWhere((e) => e.name == saved, orElse: () => AppThemeId.clearTeal);
   }
 
   Future<void> setTheme(AppThemeId id) async {

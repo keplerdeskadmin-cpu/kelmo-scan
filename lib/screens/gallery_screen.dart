@@ -17,8 +17,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 import '../models/scan_document.dart';
-import '../models/scan_recipe.dart';
 import '../services/app_settings.dart';
+import '../services/backup_service.dart';
 import '../services/document_repository.dart';
 import '../services/pdf_exporter.dart';
 import '../theme/app_themes.dart';
@@ -28,21 +28,26 @@ import '../widgets/theme_picker_sheet.dart';
 import 'camera_screen.dart';
 import 'document_screen.dart';
 import 'settings_screen.dart';
+import 'trash_screen.dart';
 
-/// A filter chip above the document list (favourites, smart collection or tag).
-class _Filter {
-  const _Filter(this.label, {this.fav = false, this.kinds, this.tag});
-  final String label;
-  final bool fav;
-  final List<String>? kinds;
-  final String? tag;
-  @override
-  bool operator ==(Object o) => o is _Filter && o.label == label;
-  @override
-  int get hashCode => label.hashCode;
+const _appVersion = '1.1';
+const _apkLink = 'https://github.com/keplerdeskadmin-cpu/kelmo-scan/releases/latest/download/KelmoScan-arm64.apk';
+
+/// "Oct-21, 15:47" — the date style used in the document list.
+String listDate(DateTime d) {
+  const m = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  String t(int v) => v.toString().padLeft(2, '0');
+  final y = d.year == DateTime.now().year ? '' : ' ${d.year}';
+  return '${m[d.month - 1]}-${t(d.day)}$y, ${t(d.hour)}:${t(d.minute)}';
 }
 
-/// Gallery: quick-scan recipes, folders, smart filters, search, multi-select sharing.
+String sizeLabel(int bytes) {
+  if (bytes >= 1 << 20) return '${(bytes / (1 << 20)).toStringAsFixed(1)} MB';
+  if (bytes >= 1024) return '${(bytes / 1024).round()} KB';
+  return '$bytes Byte';
+}
+
+/// Home screen: "My Docs" list in the Clear Scanner style.
 class GalleryScreen extends StatefulWidget {
   const GalleryScreen({super.key});
   @override
@@ -51,15 +56,13 @@ class GalleryScreen extends StatefulWidget {
 
 class _GalleryScreenState extends State<GalleryScreen> {
   final _repo = DocumentRepository.instance;
+  final _settings = AppSettings.instance;
   final _key = GlobalKey<ScaffoldState>();
   List<Folder> _folders = [];
   List<ScanDocument> _docs = [];
-  List<String> _tags = [];
-  Map<String, int> _kindCounts = {};
-  int _total = 0;
-  int? _folder; // null = all folders
-  _Filter? _filter; // null = no filter
-  bool _searching = false, _busy = false;
+  int _total = 0, _trash = 0;
+  Folder? _folder; // null = root
+  bool _searching = false, _busy = false, _selectMode = false;
   String _q = '';
   final Set<int> _sel = {};
 
@@ -71,17 +74,29 @@ class _GalleryScreenState extends State<GalleryScreen> {
 
   Future<void> _reload() async {
     final f = await _repo.folders();
-    final d = await _repo.documents(
-        folderId: _folder, query: _q, favOnly: _filter?.fav ?? false, kinds: _filter?.kinds, tag: _filter?.tag);
+    final d = await _repo.documents(folderId: _folder?.id, query: _q);
     final t = await _repo.totalDocuments();
-    final tags = await _repo.allTags(limit: 8);
-    final kc = await _repo.kindCounts();
-    if (mounted) setState(() { _folders = f; _docs = d; _total = t; _tags = tags; _kindCounts = kc; });
+    final tr = await _repo.trashCount();
+    _sort(d);
+    if (mounted) setState(() { _folders = f; _docs = d; _total = t; _trash = tr; });
   }
 
-  Future<void> _scan([ScanRecipe? recipe]) async {
-    final ok = await Navigator.push<bool>(
-        context, MaterialPageRoute(builder: (_) => CameraScreen(folderId: _folder, recipe: recipe)));
+  void _sort(List<ScanDocument> d) {
+    switch (_settings.homeSort) {
+      case 'date_asc': d.sort((a, b) => a.updated.compareTo(b.updated));
+      case 'name_asc': d.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+      case 'name_desc': d.sort((a, b) => b.title.toLowerCase().compareTo(a.title.toLowerCase()));
+      case 'size_desc': d.sort((a, b) => b.bytes.compareTo(a.bytes));
+      default: d.sort((a, b) => b.updated.compareTo(a.updated));
+    }
+  }
+
+  void _snack(String m) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+
+  // ───────── navigation
+  Future<void> _camera({bool gallery = false}) async {
+    final ok = await Navigator.push<bool>(context,
+        MaterialPageRoute(builder: (_) => CameraScreen(folderId: _folder?.id, startWithGallery: gallery)));
     if (ok == true) _reload();
   }
 
@@ -90,71 +105,100 @@ class _GalleryScreenState extends State<GalleryScreen> {
     _reload();
   }
 
-  Future<void> _openSettings() async {
-    await Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()));
+  Future<void> _push(Widget w) async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => w));
     _reload();
   }
 
-  Future<void> _newFolder() async {
-    final n = await promptText(context, 'New folder', hint: 'Folder name');
-    if (n != null) { await _repo.addFolder(n); _reload(); }
+  // ───────── overflow menu
+  Future<void> _menu(String v) async {
+    switch (v) {
+      case 'select': setState(() { _selectMode = true; _sel.clear(); });
+      case 'grid': _settings.homeGrid = !_settings.homeGrid; setState(() {});
+      case 'sort': await _pickSort();
+      case 'pdf': _snack('Import PDF is coming in the next update');
+      case 'images': await _camera(gallery: true);
+      case 'folder':
+        final n = await promptText(context, 'New Folder', hint: 'Folder name');
+        if (n != null) { await _repo.addFolder(n); _reload(); }
+      case 'blank': _snack('New Blank page is coming in the next update');
+    }
   }
 
-  Future<void> _folderMenu(Folder f) async {
-    final act = await showModalBottomSheet<String>(
+  Future<void> _pickSort() async {
+    const opts = {
+      'date_desc': 'Date (newest first)',
+      'date_asc': 'Date (oldest first)',
+      'name_asc': 'Name (A – Z)',
+      'name_desc': 'Name (Z – A)',
+      'size_desc': 'Size (largest first)',
+    };
+    final cur = _settings.homeSort;
+    final v = await showDialog<String>(
       context: context,
-      backgroundColor: context.pal.surface,
-      builder: (ctx) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          ListTile(leading: const Icon(Icons.edit_outlined), title: const Text('Rename'), onTap: () => Navigator.pop(ctx, 'rename')),
-          ListTile(leading: const Icon(Icons.delete_outline), title: const Text('Delete folder'), onTap: () => Navigator.pop(ctx, 'delete')),
-        ]),
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Sort by'),
+        children: [
+          for (final e in opts.entries)
+            ListTile(
+              leading: Icon(e.key == cur ? Icons.radio_button_checked : Icons.radio_button_off, color: context.pal.accent),
+              title: Text(e.value),
+              onTap: () => Navigator.pop(ctx, e.key),
+            ),
+        ],
       ),
     );
-    if (act == 'rename') {
+    if (v != null) { _settings.homeSort = v; _reload(); }
+  }
+
+  // ───────── per-item actions
+  Future<void> _docMenu(String v, ScanDocument d) async {
+    switch (v) {
+      case 'share':
+        final pages = await _repo.pages(d.id);
+        await PdfExporter.exportAndShare(d.title, [for (final p in pages) p.imagePath], _settings.pdfSize);
+      case 'ocr':
+        final pages = await _repo.pages(d.id);
+        if (mounted) OcrSheet.show(context, [for (final p in pages) p.imagePath]);
+      case 'rename':
+        final n = await promptText(context, 'Rename', initial: d.title);
+        if (n != null) await _repo.renameDocument(d.id, n);
+      case 'move':
+        final id = await pickFolder(context, _folders, d.folderId);
+        if (id != null) await _repo.moveDocument(d.id, id == -1 ? null : id);
+      case 'fav':
+        await _repo.setFavorite(d.id, !d.fav);
+      case 'delete':
+        await _repo.trashDocument(d.id);
+        if (mounted) _snack('"${d.title}" moved to Trash');
+    }
+    _reload();
+  }
+
+  Future<void> _folderMenu(String v, Folder f) async {
+    if (v == 'rename') {
       final n = await promptText(context, 'Rename folder', initial: f.name);
       if (n != null) await _repo.renameFolder(f.id, n);
-    } else if (act == 'delete') {
+    } else if (v == 'delete') {
       if (await confirm(context, 'Delete "${f.name}"?', 'Documents inside are kept (moved out of the folder).')) {
         await _repo.deleteFolder(f.id);
-        if (_folder == f.id) _folder = null;
       }
     }
     _reload();
   }
 
-  Future<void> _docMenu(String v, ScanDocument d) async {
-    if (v == 'fav') {
-      await _repo.setFavorite(d.id, !d.fav);
-    } else if (v == 'rename') {
-      final n = await promptText(context, 'Rename', initial: d.title);
-      if (n != null) await _repo.renameDocument(d.id, n);
-    } else if (v == 'move') {
-      final id = await pickFolder(context, _folders, d.folderId);
-      if (id != null) await _repo.moveDocument(d.id, id == -1 ? null : id);
-    } else if (v == 'delete') {
-      if (await confirm(context, 'Delete "${d.title}"?', 'This cannot be undone.')) await _repo.deleteDocument(d.id);
-    }
-    _reload();
-  }
+  // ───────── selection
+  void _toggle(int id) => setState(() {
+        if (!_sel.remove(id)) _sel.add(id);
+        if (_sel.isEmpty) _selectMode = false;
+      });
 
-  Future<void> _quickPdf(ScanDocument d) async {
-    final pages = await _repo.pages(d.id);
-    await PdfExporter.exportAndShare(d.title, [for (final p in pages) p.imagePath], AppSettings.instance.pdfSize);
-  }
-
-  Future<void> _quickOcr(ScanDocument d) async {
-    final pages = await _repo.pages(d.id);
-    if (mounted) OcrSheet.show(context, [for (final p in pages) p.imagePath]);
-  }
-
-  // ───────── multi-select
-  void _toggle(int id) => setState(() { if (!_sel.remove(id)) _sel.add(id); });
+  void _endSelect() => setState(() { _sel.clear(); _selectMode = false; });
 
   Future<void> _shareSelected() async {
+    if (_sel.isEmpty) return;
     final mode = await showModalBottomSheet<String>(
       context: context,
-      backgroundColor: context.pal.surface,
       builder: (ctx) => SafeArea(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           ListTile(leading: const Icon(Icons.picture_as_pdf_outlined), title: const Text('One merged PDF'), onTap: () => Navigator.pop(ctx, 'merged')),
@@ -167,7 +211,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
     setState(() => _busy = true);
     try {
       final docs = _docs.where((d) => _sel.contains(d.id)).toList();
-      final size = AppSettings.instance.pdfSize;
+      final size = _settings.pdfSize;
       if (mode == 'merged') {
         final images = <String>[];
         for (final d in docs) { images.addAll((await _repo.pages(d.id)).map((p) => p.imagePath)); }
@@ -184,304 +228,428 @@ class _GalleryScreenState extends State<GalleryScreen> {
         for (final d in docs) { files.addAll((await _repo.pages(d.id)).map((p) => XFile(p.imagePath))); }
         await Share.shareXFiles(files);
       }
-      if (mounted) setState(() => _sel.clear());
+      _endSelect();
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Share failed: $e')));
+      if (mounted) _snack('Share failed: $e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
-  Future<void> _deleteSelected() async {
-    if (!await confirm(context, 'Delete ${_sel.length} documents?', 'This cannot be undone.')) return;
-    for (final id in _sel) { await _repo.deleteDocument(id); }
-    setState(() => _sel.clear());
+  Future<void> _trashSelected() async {
+    if (_sel.isEmpty) return;
+    final n = _sel.length;
+    for (final id in _sel) { await _repo.trashDocument(id); }
+    _endSelect();
+    _reload();
+    if (mounted) _snack('$n document(s) moved to Trash');
+  }
+
+  Future<void> _moveSelected() async {
+    if (_sel.isEmpty) return;
+    final id = await pickFolder(context, _folders, null);
+    if (id == null) return;
+    for (final d in _sel) { await _repo.moveDocument(d, id == -1 ? null : id); }
+    _endSelect();
     _reload();
   }
 
-  IconData _iconFor(String n) {
-    final s = n.toLowerCase();
-    if (s.contains('personal')) return Icons.folder_shared_rounded;
-    if (s.contains('work')) return Icons.work_rounded;
-    if (s.contains('receipt')) return Icons.receipt_long_rounded;
-    return Icons.folder_rounded;
+  // ───────── cloud / backup
+  Future<void> _syncToCloud() async {
+    setState(() => _busy = true);
+    try {
+      final path = await BackupService.create();
+      await Share.shareXFiles([XFile(path)],
+          text: 'Kelmo Scan backup — save it to Google Drive or Dropbox. Restore it from Backup file / Restore.');
+    } catch (e) {
+      if (mounted) _snack('Backup failed: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
+  void _tutorial() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('How to use Kelmo Scan'),
+        content: const SingleChildScrollView(
+          child: Text(
+            '1. Tap the camera button to scan. Hold the phone steady — the edges are found automatically.\n\n'
+            '2. Drag the corners to adjust the border, then pick a filter.\n\n'
+            '3. Tap the gallery button to import photos you already have.\n\n'
+            '4. Open a document to add pages, run OCR (English / Urdu) or share it as PDF.\n\n'
+            '5. Long-press a document to select several and share or delete them together.\n\n'
+            '6. Deleted documents go to Trash — restore them from the menu.',
+          ),
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+      ),
+    );
+  }
+
+  void _about() => showAboutDialog(
+        context: context,
+        applicationName: 'Kelmo Scan',
+        applicationVersion: 'Version $_appVersion',
+        applicationLegalese: 'Free & open-source (GPLv3)\nNo ads • No tracking • 100% offline',
+      );
+
+  // ───────── UI
   @override
   Widget build(BuildContext context) {
     final p = context.pal;
-    final selecting = _sel.isNotEmpty;
+    final selecting = _selectMode || _sel.isNotEmpty;
+    final inFolder = _folder != null;
     return PopScope(
-      canPop: !selecting,
-      onPopInvokedWithResult: (didPop, _) { if (!didPop) setState(() => _sel.clear()); },
+      canPop: !selecting && !_searching && !inFolder,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (selecting) { _endSelect(); return; }
+        if (_searching) { setState(() { _searching = false; _q = ''; }); _reload(); return; }
+        if (inFolder) { setState(() => _folder = null); _reload(); }
+      },
       child: Scaffold(
         key: _key,
-        drawer: Drawer(
-          backgroundColor: p.surface,
-          child: SafeArea(
-            child: ListView(children: [
-              ListTile(
-                leading: Icon(Icons.palette_outlined, color: p.accent),
-                title: const Text('Themes'),
-                onTap: () { Navigator.pop(context); ThemePickerSheet.show(context); },
+        backgroundColor: p.background,
+        drawer: _drawer(p),
+        appBar: selecting ? _selectBar(p) : _mainBar(p),
+        body: Stack(children: [
+          RefreshIndicator(onRefresh: _reload, color: p.accent, child: _settings.homeGrid ? _grid(p) : _list(p)),
+          if (_busy) Container(color: Colors.black38, child: Center(child: CircularProgressIndicator(color: p.accent))),
+        ]),
+        bottomNavigationBar: selecting ? null : _bottomBar(p),
+      ),
+    );
+  }
+
+  PreferredSizeWidget _mainBar(AppPalette p) => AppBar(
+        backgroundColor: p.appBar,
+        leading: _searching
+            ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: () { setState(() { _searching = false; _q = ''; }); _reload(); })
+            : _folder != null
+                ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: () { setState(() => _folder = null); _reload(); })
+                : IconButton(icon: const Icon(Icons.menu), onPressed: () => _key.currentState?.openDrawer()),
+        titleSpacing: 4,
+        title: _searching
+            ? TextField(
+                autofocus: true,
+                style: TextStyle(color: p.onAppBar, fontSize: 18),
+                cursorColor: p.onAppBar,
+                decoration: InputDecoration(
+                    border: InputBorder.none, hintText: 'Search name or text…', hintStyle: TextStyle(color: p.onAppBar.withAlpha(150))),
+                onChanged: (v) { _q = v; _reload(); },
+              )
+            : Text(_folder != null ? '${_folder!.name} (${_docs.length})' : 'My Docs ($_total)'),
+        actions: [
+          if (!_searching) IconButton(icon: const Icon(Icons.search), tooltip: 'Search', onPressed: () => setState(() => _searching = true)),
+          if (!_searching) IconButton(icon: const Icon(Icons.cloud_outlined), tooltip: 'Sync to Cloud', onPressed: _syncToCloud),
+          if (!_searching)
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert),
+              color: Colors.white,
+              onSelected: _menu,
+              itemBuilder: (_) => [
+                _mi('select', Icons.check_box, 'Select'),
+                _mi('grid', _settings.homeGrid ? Icons.view_list : Icons.grid_view_rounded, _settings.homeGrid ? 'View as list' : 'View as grid'),
+                _mi('sort', Icons.sort, 'Sort'),
+                const PopupMenuDivider(),
+                _mi('pdf', Icons.picture_as_pdf, 'Import PDF'),
+                _mi('images', Icons.add_photo_alternate, 'Import images'),
+                const PopupMenuDivider(),
+                _mi('folder', Icons.create_new_folder, 'New Folder'),
+                _mi('blank', Icons.note_add, 'New Blank page'),
+              ],
+            ),
+        ],
+      );
+
+  PopupMenuItem<String> _mi(String v, IconData i, String t) => PopupMenuItem(
+        value: v,
+        child: Row(children: [Icon(i, color: const Color(0xFF202124), size: 22), const SizedBox(width: 16), Text(t)]),
+      );
+
+  PreferredSizeWidget _selectBar(AppPalette p) => AppBar(
+        backgroundColor: p.appBar,
+        leading: IconButton(icon: const Icon(Icons.close), onPressed: _endSelect),
+        title: Text('${_sel.length} selected'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.select_all),
+            tooltip: 'Select all',
+            onPressed: () => setState(() {
+              if (_sel.length == _docs.length) { _sel.clear(); } else { _sel.addAll(_docs.map((d) => d.id)); }
+            }),
+          ),
+          IconButton(icon: const Icon(Icons.drive_file_move_outline), tooltip: 'Move', onPressed: _moveSelected),
+          IconButton(icon: const Icon(Icons.share), tooltip: 'Share', onPressed: _shareSelected),
+          IconButton(icon: const Icon(Icons.delete_outline), tooltip: 'Delete', onPressed: _trashSelected),
+        ],
+      );
+
+  Widget _bottomBar(AppPalette p) => Container(
+        color: p.appBar,
+        child: SafeArea(
+          top: false,
+          child: SizedBox(
+            height: 60,
+            child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              IconButton(
+                iconSize: 36, color: Colors.white, tooltip: 'Import images',
+                icon: const Icon(Icons.image), onPressed: () => _camera(gallery: true),
+              ),
+              const SizedBox(width: 18),
+              IconButton(
+                iconSize: 36, color: Colors.white, tooltip: 'Scan',
+                icon: const Icon(Icons.photo_camera), onPressed: _camera,
               ),
             ]),
           ),
         ),
-        appBar: selecting
-            ? AppBar(
-                leading: IconButton(icon: const Icon(Icons.close), onPressed: () => setState(() => _sel.clear())),
-                title: Text('${_sel.length} selected'),
-                actions: [
-                  IconButton(icon: const Icon(Icons.share_outlined), onPressed: _shareSelected),
-                  IconButton(icon: const Icon(Icons.delete_outline), onPressed: _deleteSelected),
+      );
+
+  Widget _drawer(AppPalette p) {
+    Widget item(IconData i, String t, VoidCallback onTap) => ListTile(
+          leading: Icon(i, color: const Color(0xFF202124)),
+          title: Text(t, style: const TextStyle(fontSize: 16)),
+          onTap: () { Navigator.pop(context); onTap(); },
+        );
+    return Drawer(
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(),
+      child: Column(children: [
+        Container(
+          width: double.infinity,
+          color: const Color(0xFF1E3837),
+          padding: EdgeInsets.fromLTRB(16, MediaQuery.of(context).padding.top + 18, 16, 14),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('Kelmo Scan',
+                style: TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.w700, fontStyle: FontStyle.italic, letterSpacing: .5)),
+            const SizedBox(height: 4),
+            Row(children: [
+              const Text('Version $_appVersion', style: TextStyle(color: Colors.white, fontSize: 14)),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                decoration: BoxDecoration(border: Border.all(color: Colors.white), borderRadius: BorderRadius.circular(3)),
+                child: const Text('FREE', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600)),
+              ),
+            ]),
+          ]),
+        ),
+        Expanded(
+          child: ListView(padding: EdgeInsets.zero, children: [
+            item(Icons.settings, 'Settings', () => _push(const SettingsScreen())),
+            const Divider(height: 1),
+            item(Icons.cloud_outlined, 'Sync to Cloud', _syncToCloud),
+            item(Icons.restore, 'Backup file / Restore', () => _push(const SettingsScreen())),
+            item(Icons.delete, 'Trash ($_trash)', () => _push(const TrashScreen())),
+            const Divider(height: 1),
+            item(Icons.palette_outlined, 'Themes', () => ThemePickerSheet.show(context)),
+            item(Icons.help_outline, 'Tutorial', _tutorial),
+            item(Icons.thumb_up_outlined, 'I love this app!',
+                () => Share.share('I use Kelmo Scan — a free document scanner with Urdu OCR. Download: $_apkLink')),
+            item(Icons.feedback_outlined, 'Feature Request / Bug ...',
+                () => Share.share('Kelmo Scan $_appVersion — feature request / bug:\n\n')),
+            item(Icons.info_outline, 'About Kelmo Scan', _about),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  // ───────── list view
+  Widget _list(AppPalette p) {
+    final showFolders = _folder == null && !_searching && _q.isEmpty;
+    final items = <Widget>[
+      if (showFolders) for (final f in _folders) _folderRow(p, f),
+      for (final d in _docs) _docRow(p, d),
+    ];
+    if (items.isEmpty) return _empty(p);
+    return ListView.separated(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.only(bottom: 12),
+      itemCount: items.length,
+      separatorBuilder: (_, __) => const Divider(height: 1, thickness: 1, color: Color(0xFFE6E9E9)),
+      itemBuilder: (_, i) => items[i],
+    );
+  }
+
+  Widget _empty(AppPalette p) => ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: [
+          const SizedBox(height: 120),
+          Icon(Icons.description_outlined, size: 72, color: p.textMuted.withAlpha(120)),
+          const SizedBox(height: 14),
+          Text(_q.isNotEmpty ? 'No matches' : 'No documents yet.\nTap the camera to scan.',
+              textAlign: TextAlign.center, style: TextStyle(color: p.textMuted, fontSize: 16)),
+        ],
+      );
+
+  Widget _thumb(String? path, {double w = 92, double h = 62}) => Container(
+        width: w,
+        height: h,
+        decoration: BoxDecoration(color: Colors.white, border: Border.all(color: const Color(0xFFA1AAA5), width: 1)),
+        child: path != null
+            ? Image.file(File(path), fit: BoxFit.contain, cacheWidth: 300,
+                errorBuilder: (_, __, ___) => const Icon(Icons.warning_amber_rounded, size: 32))
+            : const Icon(Icons.warning_amber_rounded, size: 32),
+      );
+
+  Widget _pageBadge(int n) => Container(
+        margin: const EdgeInsets.only(left: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 3),
+        constraints: const BoxConstraints(minWidth: 14),
+        decoration: BoxDecoration(border: Border.all(color: const Color(0xFF5F6666), width: 1.2), borderRadius: BorderRadius.circular(2)),
+        child: Text('$n', textAlign: TextAlign.center, style: const TextStyle(fontSize: 11, height: 1.25, color: Color(0xFF5F6666))),
+      );
+
+  Widget _docRow(AppPalette p, ScanDocument d) {
+    final sel = _sel.contains(d.id);
+    final selecting = _selectMode || _sel.isNotEmpty;
+    return Material(
+      color: sel ? const Color(0xFFE4EFEE) : Colors.white,
+      child: InkWell(
+        onTap: () => selecting ? _toggle(d.id) : _openDoc(d),
+        onLongPress: () => _toggle(d.id),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 10, 0, 10),
+          child: Row(children: [
+            Stack(children: [
+              _thumb(d.thumbPath),
+              if (selecting)
+                Positioned(
+                  left: 2, top: 2,
+                  child: Icon(sel ? Icons.check_box : Icons.check_box_outline_blank, color: p.accent, size: 22),
+                ),
+            ]),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  Flexible(
+                    child: Text(d.title,
+                        maxLines: 2, overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 17, color: Color(0xFF202124), height: 1.2)),
+                  ),
+                  if (d.fav) const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.star_rounded, color: Colors.amber, size: 18)),
+                ]),
+                const SizedBox(height: 3),
+                Row(children: [
+                  Text(sizeLabel(d.bytes), style: const TextStyle(fontSize: 14, color: Color(0xFF6F7777))),
+                  _pageBadge(d.pageCount),
+                ]),
+                const SizedBox(height: 1),
+                Text(listDate(d.updated), style: const TextStyle(fontSize: 14, color: Color(0xFF6F7777))),
+              ]),
+            ),
+            if (!selecting)
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.more_vert, color: Color(0xFF5F6666)),
+                color: Colors.white,
+                onSelected: (v) => _docMenu(v, d),
+                itemBuilder: (_) => [
+                  _mi('share', Icons.share, 'Share PDF'),
+                  _mi('ocr', Icons.text_fields, 'Extract text (OCR)'),
+                  _mi('rename', Icons.edit, 'Rename'),
+                  _mi('move', Icons.drive_file_move_outline, 'Move to folder'),
+                  _mi('fav', d.fav ? Icons.star : Icons.star_border, d.fav ? 'Remove favorite' : 'Add to favorites'),
+                  _mi('delete', Icons.delete_outline, 'Delete'),
                 ],
               )
-            : AppBar(
-                leading: _searching
-                    ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: () { setState(() { _searching = false; _q = ''; }); _reload(); })
-                    : (p.hasMenuIcon ? IconButton(icon: const Icon(Icons.menu), onPressed: () => _key.currentState?.openDrawer()) : null),
-                title: _searching
-                    ? TextField(
-                        autofocus: true,
-                        style: TextStyle(color: p.onAppBar, fontSize: 18),
-                        cursorColor: p.onAppBar,
-                        decoration: InputDecoration(border: InputBorder.none, hintText: 'Search name, tag or text…', hintStyle: TextStyle(color: p.onAppBar.withAlpha(150))),
-                        onChanged: (v) { _q = v; _reload(); },
-                      )
-                    : const Text('My Documents'),
-                actions: [
-                  if (!_searching) IconButton(icon: const Icon(Icons.search), onPressed: () => setState(() => _searching = true)),
-                  if (!_searching) IconButton(icon: const Icon(Icons.settings_outlined), onPressed: _openSettings),
-                ],
-              ),
-        body: Stack(children: [
-          ListView(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 110),
-            children: [
-              _sectionTitle(p, 'Quick scan'),
-              SizedBox(
-                height: 44,
-                child: ListView(scrollDirection: Axis.horizontal, children: [
-                  for (final k in ['passport', 'idCard', 'receipt', 'document'])
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: ActionChip(
-                        avatar: Icon(ScanRecipe.byName(k).icon, size: 18, color: p.accent),
-                        label: Text(ScanRecipe.byName(k).label),
-                        backgroundColor: p.surface,
-                        side: BorderSide(color: p.outline),
-                        onPressed: () => _scan(ScanRecipe.byName(k)),
-                      ),
-                    ),
-                ]),
-              ),
-              const SizedBox(height: 14),
-              SizedBox(
-                height: 112,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _folders.length + 2,
-                  separatorBuilder: (_, __) => const SizedBox(width: 10),
-                  itemBuilder: (_, i) {
-                    if (i == 0) {
-                      return _folderTile(p, 'All Documents', '$_total items', Icons.folder_rounded, _folder == null,
-                          () { setState(() => _folder = null); _reload(); }, null);
-                    }
-                    if (i == _folders.length + 1) {
-                      return _folderTile(p, 'New', 'Add folder', Icons.create_new_folder_rounded, false, _newFolder, null);
-                    }
-                    final f = _folders[i - 1];
-                    return _folderTile(p, f.name, '${f.count} items', _iconFor(f.name), _folder == f.id,
-                        () { setState(() => _folder = f.id); _reload(); }, () => _folderMenu(f));
-                  },
-                ),
-              ),
-              const SizedBox(height: 14),
-              SizedBox(height: 40, child: _filterChips(p)),
-              const SizedBox(height: 12),
-              Text(_q.isNotEmpty ? 'Results' : 'Recent Scans',
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: p.text, fontFamily: p.headingFont)),
-              const SizedBox(height: 10),
-              if (_docs.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 50),
-                  child: Column(children: [
-                    Icon(Icons.document_scanner_outlined, size: 64, color: p.textMuted),
-                    const SizedBox(height: 12),
-                    Text(_q.isNotEmpty || _filter != null ? 'No matches' : 'No documents yet.\nTap the camera to scan.',
-                        textAlign: TextAlign.center, style: TextStyle(color: p.textMuted, fontSize: 16)),
-                  ]),
-                ),
-              for (final d in _docs) _docTile(p, d),
-            ],
-          ),
-          if (_busy) Container(color: Colors.black38, child: Center(child: CircularProgressIndicator(color: p.accent))),
-        ]),
-        floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
-        floatingActionButton: SizedBox(
-          width: 70, height: 70,
-          child: FloatingActionButton(
-            heroTag: 'scan', elevation: 6, shape: const CircleBorder(),
-            backgroundColor: p.accent, foregroundColor: p.onAccent, onPressed: () => _scan(),
-            child: const Icon(Icons.photo_camera_rounded, size: 32),
-          ),
-        ),
-        bottomNavigationBar: BottomAppBar(
-          color: p.surface, surfaceTintColor: Colors.transparent,
-          shape: const CircularNotchedRectangle(), notchMargin: 8, height: 70,
-          child: Row(children: [
-            Expanded(child: _nav(p, Icons.home_rounded, 'Documents', true, () {})),
-            const SizedBox(width: 76),
-            Expanded(child: _nav(p, Icons.settings_rounded, 'Settings', false, _openSettings)),
+            else
+              const SizedBox(width: 12),
           ]),
         ),
       ),
     );
   }
 
-  Widget _sectionTitle(AppPalette p, String t) => Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Text(t, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: p.textMuted)),
+  Widget _folderRow(AppPalette p, Folder f) => Material(
+        color: Colors.white,
+        child: InkWell(
+          onTap: () { setState(() => _folder = f); _reload(); },
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(8, 8, 0, 8),
+            child: Row(children: [
+              SizedBox(width: 92, height: 62, child: Icon(Icons.folder, size: 60, color: p.folderIcon)),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(f.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 17, color: Color(0xFF202124))),
+                  const SizedBox(height: 3),
+                  Text('${f.count} ${f.count == 1 ? 'doc' : 'docs'}', style: const TextStyle(fontSize: 14, color: Color(0xFF6F7777))),
+                ]),
+              ),
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.more_vert, color: Color(0xFF5F6666)),
+                color: Colors.white,
+                onSelected: (v) => _folderMenu(v, f),
+                itemBuilder: (_) => [
+                  _mi('rename', Icons.edit, 'Rename'),
+                  _mi('delete', Icons.delete_outline, 'Delete folder'),
+                ],
+              ),
+            ]),
+          ),
+        ),
       );
 
-  Widget _filterChips(AppPalette p) {
-    final chips = <_Filter?>[null, const _Filter('★ Favorites', fav: true)];
-    for (final c in ScanCollection.all) {
-      final n = c.kinds.fold<int>(0, (s, k) => s + (_kindCounts[k] ?? 0));
-      if (n > 0) chips.add(_Filter(c.label, kinds: c.kinds));
-    }
-    for (final t in _tags) { chips.add(_Filter('#$t', tag: t)); }
-    return ListView.separated(
-      scrollDirection: Axis.horizontal,
-      itemCount: chips.length,
-      separatorBuilder: (_, __) => const SizedBox(width: 8),
+  // ───────── grid view
+  Widget _grid(AppPalette p) {
+    final showFolders = _folder == null && !_searching && _q.isEmpty;
+    final folders = showFolders ? _folders : <Folder>[];
+    if (folders.isEmpty && _docs.isEmpty) return _empty(p);
+    return GridView.builder(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.all(10),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 2, mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: .78),
+      itemCount: folders.length + _docs.length,
       itemBuilder: (_, i) {
-        final f = chips[i];
-        final on = _filter == f;
-        return ChoiceChip(
-          label: Text(f?.label ?? 'All'),
-          selected: on,
-          showCheckmark: false,
-          selectedColor: p.accent.withAlpha(45),
-          backgroundColor: p.surface,
-          side: BorderSide(color: on ? p.accent : p.outline),
-          labelStyle: TextStyle(color: on ? p.accent : p.text, fontWeight: FontWeight.w600),
-          onSelected: (_) { setState(() => _filter = f); _reload(); },
+        if (i < folders.length) {
+          final f = folders[i];
+          return InkWell(
+            onTap: () { setState(() => _folder = f); _reload(); },
+            onLongPress: () => _folderMenu('rename', f),
+            child: Column(children: [
+              Expanded(child: Container(color: const Color(0xFFF1F4F4), child: Center(child: Icon(Icons.folder, size: 90, color: p.folderIcon)))),
+              const SizedBox(height: 6),
+              Text(f.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15)),
+              Text('${f.count} docs', style: const TextStyle(fontSize: 12, color: Color(0xFF6F7777))),
+            ]),
+          );
+        }
+        final d = _docs[i - folders.length];
+        final sel = _sel.contains(d.id);
+        final selecting = _selectMode || _sel.isNotEmpty;
+        return InkWell(
+          onTap: () => selecting ? _toggle(d.id) : _openDoc(d),
+          onLongPress: () => _toggle(d.id),
+          child: Column(children: [
+            Expanded(
+              child: Stack(children: [
+                Positioned.fill(child: _thumb(d.thumbPath, w: double.infinity, h: double.infinity)),
+                Positioned(
+                  left: 0, right: 0, bottom: 0,
+                  child: Container(
+                    color: const Color(0xCC224646),
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                    child: Text('${d.pageCount.toString().padLeft(2, '0')}   ${sizeLabel(d.bytes)}',
+                        style: const TextStyle(color: Colors.white, fontSize: 12)),
+                  ),
+                ),
+                if (selecting)
+                  Positioned(left: 4, top: 4, child: Icon(sel ? Icons.check_box : Icons.check_box_outline_blank, color: p.accent)),
+              ]),
+            ),
+            const SizedBox(height: 6),
+            Text(d.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15)),
+            Text(listDate(d.updated), style: const TextStyle(fontSize: 12, color: Color(0xFF6F7777))),
+          ]),
         );
       },
     );
   }
-
-  Widget _nav(AppPalette p, IconData i, String l, bool sel, VoidCallback t) => InkWell(
-        onTap: t,
-        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Icon(i, color: sel ? p.accent : p.textMuted),
-          Text(l, style: TextStyle(fontSize: 12, color: sel ? p.accent : p.textMuted, fontWeight: sel ? FontWeight.w600 : FontWeight.w400)),
-          const SizedBox(height: 2),
-          Container(height: 3, width: 36, decoration: BoxDecoration(color: sel ? p.accent : Colors.transparent, borderRadius: BorderRadius.circular(2))),
-        ]),
-      );
-
-  Widget _folderTile(AppPalette p, String name, String sub, IconData icon, bool sel, VoidCallback tap, VoidCallback? longPress) =>
-      GestureDetector(
-        onTap: tap,
-        onLongPress: longPress,
-        child: Container(
-          width: 128,
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: sel ? p.accent.withAlpha(30) : p.folderCard,
-            borderRadius: BorderRadius.circular(p.radius),
-            border: Border.all(color: sel ? p.accent.withAlpha(110) : p.outline),
-          ),
-          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Icon(icon, size: 38, color: p.folderIcon),
-            const SizedBox(height: 6),
-            Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontWeight: FontWeight.w600, color: p.onFolderCard)),
-            Text(sub, style: TextStyle(fontSize: 12, color: p.onFolderCard.withAlpha(170))),
-          ]),
-        ),
-      );
-
-  Widget _docTile(AppPalette p, ScanDocument d) {
-    final sel = _sel.contains(d.id);
-    return GestureDetector(
-      onTap: () => _sel.isNotEmpty ? _toggle(d.id) : _openDoc(d),
-      onLongPress: () => _toggle(d.id),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          color: sel ? p.accent.withAlpha(25) : p.surface,
-          borderRadius: BorderRadius.circular(p.radius),
-          border: Border.all(color: sel ? p.accent : p.outline, width: sel ? 2 : 1),
-        ),
-        child: Row(children: [
-          Stack(children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: SizedBox(
-                width: 64, height: 76,
-                child: d.thumbPath != null
-                    ? Image.file(File(d.thumbPath!), fit: BoxFit.cover, cacheWidth: 200)
-                    : Container(color: p.surfaceAlt, child: Icon(Icons.description_outlined, color: p.textMuted, size: 30)),
-              ),
-            ),
-            if (sel) Positioned(right: 2, top: 2, child: Icon(Icons.check_circle, color: p.accent, size: 22)),
-          ]),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                Flexible(
-                  child: Text(d.title, maxLines: 1, overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: p.text, fontFamily: p.headingFont)),
-                ),
-                if (d.fav) const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.star_rounded, color: Colors.amber, size: 18)),
-              ]),
-              const SizedBox(height: 2),
-              Text('${d.dateLabel} • ${d.meta}', style: TextStyle(color: p.textMuted, fontSize: 13)),
-              if (d.tags.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Text(d.tags.map((t) => '#$t').join('  '), maxLines: 1, overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: p.accent, fontSize: 12, fontWeight: FontWeight.w600)),
-                ),
-              const SizedBox(height: 6),
-              Row(children: [
-                _chip(p, Icons.picture_as_pdf_outlined, 'PDF', () => _quickPdf(d)),
-                const SizedBox(width: 8),
-                _chip(p, Icons.text_fields_rounded, 'OCR', () => _quickOcr(d)),
-              ]),
-            ]),
-          ),
-          PopupMenuButton<String>(
-            icon: Icon(Icons.more_vert, color: p.textMuted),
-            onSelected: (v) => _docMenu(v, d),
-            itemBuilder: (_) => [
-              PopupMenuItem(value: 'fav', child: Text(d.fav ? 'Remove from favorites' : 'Add to favorites')),
-              const PopupMenuItem(value: 'rename', child: Text('Rename')),
-              const PopupMenuItem(value: 'move', child: Text('Move to folder')),
-              const PopupMenuItem(value: 'delete', child: Text('Delete')),
-            ],
-          ),
-        ]),
-      ),
-    );
-  }
-
-  Widget _chip(AppPalette p, IconData i, String l, VoidCallback t) => InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: t,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-          decoration: BoxDecoration(color: p.accent.withAlpha(30), borderRadius: BorderRadius.circular(16)),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Icon(i, size: 16, color: p.accent),
-            const SizedBox(width: 4),
-            Text(l, style: TextStyle(color: p.accent, fontSize: 13, fontWeight: FontWeight.w600)),
-          ]),
-        ),
-      );
 }

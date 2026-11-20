@@ -35,10 +35,11 @@ import 'edit_scan_screen.dart';
 /// Live camera + quad overlay. Collects pages (multi-page mode) and saves them to SQLite.
 /// Pops `true` when something was saved.
 class CameraScreen extends StatefulWidget {
-  const CameraScreen({super.key, this.folderId, this.addToDocId, this.recipe});
+  const CameraScreen({super.key, this.folderId, this.addToDocId, this.recipe, this.startWithGallery = false});
   final int? folderId;     // new documents go into this folder
   final int? addToDocId;   // append pages to an existing document instead
   final ScanRecipe? recipe; // preset to start with (default: last used)
+  final bool startWithGallery; // open the photo picker straight away (home "gallery" button)
   @override
   State<CameraScreen> createState() => _CameraScreenState();
 }
@@ -58,6 +59,7 @@ class _CameraScreenState extends State<CameraScreen> {
     super.initState();
     _applyRecipe(_recipe, remember: widget.recipe != null);
     _init();
+    if (widget.startWithGallery) WidgetsBinding.instance.addPostFrameCallback((_) => _fromGallery());
   }
 
   void _applyRecipe(ScanRecipe r, {bool remember = true}) {
@@ -198,7 +200,10 @@ class _CameraScreenState extends State<CameraScreen> {
   /// Import one or MANY images; each opens in the editor, all end up in one document.
   Future<void> _fromGallery() async {
     final files = await ImagePicker().pickMultiImage();
-    if (files.isEmpty) return;
+    if (files.isEmpty) {
+      if (widget.startWithGallery && _pages.isEmpty && mounted) Navigator.pop(context, false);
+      return;
+    }
     _capturing = true;
     try { await _c?.stopImageStream(); } catch (_) {}
     for (var i = 0; i < files.length; i++) {

@@ -50,7 +50,7 @@ class DocumentRepository {
     _root = Directory(p.join((await getApplicationDocumentsDirectory()).path, 'scans'))..createSync(recursive: true);
     _db = await openDatabase(
       p.join(await getDatabasesPath(), 'kelmo_scan.db'),
-      version: 3,
+      version: 4,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onUpgrade: (db, old, _) async {
         if (old < 2) await db.execute('ALTER TABLE pages ADD COLUMN ocr_text TEXT');
@@ -59,12 +59,13 @@ class DocumentRepository {
           await db.execute("ALTER TABLE documents ADD COLUMN kind TEXT NOT NULL DEFAULT 'document'");
           await _tagTables(db);
         }
+        if (old < 4) await db.execute('ALTER TABLE documents ADD COLUMN trashed INTEGER');
       },
       onCreate: (db, _) async {
         await db.execute('CREATE TABLE folders(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created INTEGER NOT NULL)');
         await db.execute('CREATE TABLE documents(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, '
             'folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL, '
-            "fav INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'document')");
+            "fav INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'document', trashed INTEGER)");
         await db.execute('CREATE TABLE pages(id INTEGER PRIMARY KEY AUTOINCREMENT, '
             'doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE, position INTEGER NOT NULL, '
             'image_path TEXT NOT NULL, thumb_path TEXT NOT NULL, orig_path TEXT NOT NULL, '
@@ -82,12 +83,12 @@ class DocumentRepository {
   // ───────── folders
   Future<List<Folder>> folders() async {
     final rows = await _db.rawQuery('SELECT f.id, f.name, COUNT(d.id) AS c FROM folders f '
-        'LEFT JOIN documents d ON d.folder_id = f.id GROUP BY f.id ORDER BY f.id');
+        'LEFT JOIN documents d ON d.folder_id = f.id AND d.trashed IS NULL GROUP BY f.id ORDER BY f.id');
     return [for (final r in rows) Folder(r['id'] as int, r['name'] as String, (r['c'] as num).toInt())];
   }
 
   Future<int> totalDocuments() async =>
-      Sqflite.firstIntValue(await _db.rawQuery('SELECT COUNT(*) FROM documents')) ?? 0;
+      Sqflite.firstIntValue(await _db.rawQuery('SELECT COUNT(*) FROM documents WHERE trashed IS NULL')) ?? 0;
 
   Future<void> addFolder(String name) =>
       _db.insert('folders', {'name': name, 'created': DateTime.now().millisecondsSinceEpoch});
@@ -109,7 +110,7 @@ class DocumentRepository {
 
   Future<List<ScanDocument>> documents(
       {int? folderId, String query = '', bool favOnly = false, List<String>? kinds, String? tag}) {
-    final w = <String>[];
+    final w = <String>['d.trashed IS NULL'];
     final a = <Object?>[];
     if (folderId != null) { w.add('d.folder_id = ?'); a.add(folderId); }
     if (favOnly) w.add('d.fav = 1');
@@ -181,7 +182,7 @@ class DocumentRepository {
       _db.update('documents', {'fav': v ? 1 : 0}, where: 'id = ?', whereArgs: [id]);
 
   Future<Map<String, int>> kindCounts() async {
-    final rows = await _db.rawQuery('SELECT kind, COUNT(*) AS c FROM documents GROUP BY kind');
+    final rows = await _db.rawQuery('SELECT kind, COUNT(*) AS c FROM documents WHERE trashed IS NULL GROUP BY kind');
     return {for (final r in rows) r['kind'] as String: (r['c'] as num).toInt()};
   }
 
@@ -191,6 +192,18 @@ class DocumentRepository {
   Future<void> _touch(int id, Map<String, Object?> v) =>
       _db.update('documents', {...v, 'updated': DateTime.now().millisecondsSinceEpoch}, where: 'id = ?', whereArgs: [id]);
 
+  // ───────── trash (documents stay on disk until emptied)
+  Future<void> trashDocument(int id) =>
+      _db.update('documents', {'trashed': DateTime.now().millisecondsSinceEpoch}, where: 'id = ?', whereArgs: [id]);
+  Future<void> restoreDocument(int id) => _db.update('documents', {'trashed': null}, where: 'id = ?', whereArgs: [id]);
+  Future<List<ScanDocument>> trashedDocuments() => _docs('d.trashed IS NOT NULL', []);
+  Future<int> trashCount() async =>
+      Sqflite.firstIntValue(await _db.rawQuery('SELECT COUNT(*) FROM documents WHERE trashed IS NOT NULL')) ?? 0;
+  Future<void> emptyTrash() async {
+    for (final d in await trashedDocuments()) { await deleteDocument(d.id); }
+  }
+
+  /// Permanently deletes a document and its files.
   Future<void> deleteDocument(int id) async {
     final dir = Directory(p.join(_root.path, '$id'));
     if (dir.existsSync()) dir.deleteSync(recursive: true);

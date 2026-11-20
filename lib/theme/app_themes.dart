@@ -18,7 +18,7 @@ import 'package:flutter/services.dart';
 
 /// The six themes reverse-engineered from the mock-up screenshots.
 /// Hex values were estimated visually from the images (see README).
-enum AppThemeId { royalNavy, ivoryGold, forestCopper, midnightGold, blackGold, charcoalSand }
+enum AppThemeId { clearTeal, royalNavy, ivoryGold, forestCopper, midnightGold, blackGold, charcoalSand }
 
 /// Every colour / shape token the UI needs. Widgets read it via `context.pal`.
 @immutable
@@ -74,6 +74,17 @@ extension PaletteX on BuildContext {
 
 class AppThemes {
   static final Map<AppThemeId, AppPalette> all = {
+    // ── DEFAULT — Clear Scanner style: dark teal bars, white list, grey text
+    AppThemeId.clearTeal: const AppPalette(
+      id: AppThemeId.clearTeal, name: 'Clear Teal', brightness: Brightness.light,
+      background: Color(0xFFFFFFFF), surface: Color(0xFFFFFFFF), surfaceAlt: Color(0xFFF1F4F4),
+      appBar: Color(0xFF224646), onAppBar: Colors.white,
+      text: Color(0xFF202124), textMuted: Color(0xFF6F7777),
+      accent: Color(0xFF224646), onAccent: Colors.white, outline: Color(0xFFE3E7E7),
+      folderCard: Color(0xFFF1F4F4), onFolderCard: Color(0xFF202124), folderIcon: Color(0xFF2E6A66),
+      cropLine: Color(0xFF2ECC40), cropHandle: Color(0xFF2ECC40),
+      radius: 4, hasMenuIcon: true,
+    ),
     // ── LIGHT 1 — navy header, white cards, blue crop frame (image 1)
     AppThemeId.royalNavy: const AppPalette(
       id: AppThemeId.royalNavy, name: 'Royal Navy', brightness: Brightness.light,
@@ -168,12 +179,14 @@ class AppThemes {
         scrolledUnderElevation: 0,
         centerTitle: p.centerTitle,
         titleTextStyle: TextStyle(
-            color: p.onAppBar, fontSize: 24, fontWeight: FontWeight.w600, fontFamily: p.headingFont),
+            color: p.onAppBar, fontSize: p.id == AppThemeId.clearTeal ? 20 : 24,
+            fontWeight: p.id == AppThemeId.clearTeal ? FontWeight.w500 : FontWeight.w600, fontFamily: p.headingFont),
         iconTheme: IconThemeData(color: p.onAppBar),
         actionsIconTheme: IconThemeData(color: p.onAppBar),
-        systemOverlayStyle: p.appBar.computeLuminance() < .5
-            ? SystemUiOverlayStyle.light
-            : SystemUiOverlayStyle.dark,
+        systemOverlayStyle: (p.appBar.computeLuminance() < .5
+                ? SystemUiOverlayStyle.light
+                : SystemUiOverlayStyle.dark)
+            .copyWith(statusBarColor: p.id == AppThemeId.clearTeal ? const Color(0xFF1E3837) : Colors.transparent),
       ),
       popupMenuTheme: PopupMenuThemeData(color: p.surface),
       extensions: [p],
