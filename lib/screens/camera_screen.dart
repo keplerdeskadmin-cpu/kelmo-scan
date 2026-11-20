@@ -101,8 +101,7 @@ class _CameraScreenState extends State<CameraScreen> {
     }
     final cams = await availableCameras();
     final back = cams.firstWhere((c) => c.lensDirection == CameraLensDirection.back, orElse: () => cams.first);
-    final res = const {'low': ResolutionPreset.medium, 'medium': ResolutionPreset.high}[AppSettings.instance.imageQuality] ??
-        ResolutionPreset.veryHigh;
+    final res = AppSettings.instance.imageQuality == 'low' ? ResolutionPreset.medium : ResolutionPreset.high;
     final c = CameraController(back, res, enableAudio: false, imageFormatGroup: ImageFormatGroup.yuv420);
     await c.initialize();
     if (!mounted) { await c.dispose(); return; }

@@ -383,7 +383,7 @@ class _DocumentScreenState extends State<DocumentScreen> {
                   Positioned.fill(
                     child: Padding(
                       padding: const EdgeInsets.all(4),
-                      child: Image.file(File(pg.thumbPath), key: ValueKey(pg.thumbPath), fit: BoxFit.contain),
+                      child: Image.file(File(pg.thumbPath), key: ValueKey(pg.thumbPath), fit: BoxFit.contain, cacheWidth: 400),
                     ),
                   ),
                   Positioned(

@@ -52,10 +52,6 @@ class OcrService {
     if (enWords >= 8 && urduLetters == 0) return en; // clearly an English page
     final ur = await recognize(path, langs: 'urd');
     final urWords = RegExp(r'[\u0621-\u06D2]{3,}').allMatches(ur).length;
-    if (urWords > enWords) {
-      final both = await recognize(path, langs: 'urd+eng'); // Urdu page that may also have English
-      return both.isEmpty ? ur : both;
-    }
-    return en;
+    return urWords > enWords ? ur : en;
   }
 }

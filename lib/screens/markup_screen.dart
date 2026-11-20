@@ -356,7 +356,7 @@ class _MarkupScreenState extends State<MarkupScreen> {
                   },
                   onScaleEnd: (_) { _cur = null; _startFocal = null; },
                   child: Stack(children: [
-                    Positioned.fill(child: Image.file(File(widget.imagePath), fit: BoxFit.fill)),
+                    Positioned.fill(child: Image.file(File(widget.imagePath), fit: BoxFit.fill, cacheWidth: 1600)),
                     Positioned.fill(child: CustomPaint(painter: _MarkPainter(_items, _aspect, selected: _sel, rev: _rev))),
                   ]),
                 );
@@ -396,7 +396,7 @@ class _MarkupScreenState extends State<MarkupScreen> {
                           },
                           child: Container(
                             width: 90, color: Colors.white, padding: const EdgeInsets.all(4),
-                            child: Image.file(_sigs[i], fit: BoxFit.contain),
+                            child: Image.file(_sigs[i], fit: BoxFit.contain, cacheWidth: 300),
                           ),
                         ),
                       ),

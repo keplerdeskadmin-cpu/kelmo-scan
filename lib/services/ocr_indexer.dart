@@ -35,6 +35,7 @@ class OcrIndexer {
     final repo = DocumentRepository.instance;
     final ocr = OcrService();
     try {
+      await Future.delayed(const Duration(seconds: 8)); // let the scan / save finish first
       while (true) {
         pending.value = await repo.pendingOcrCount();
         final batch = await repo.pagesNeedingOcr(limit: 4);
@@ -47,6 +48,7 @@ class OcrIndexer {
             if (e.code == 'OCR_INIT') return; // language data missing: stop, do NOT mark pages as done
           } catch (_) {}
           await repo.setOcrText(pg.id, text); // '' prevents endless retries
+          await Future.delayed(const Duration(seconds: 2)); // background work: keep the app smooth
         }
       }
     } finally {

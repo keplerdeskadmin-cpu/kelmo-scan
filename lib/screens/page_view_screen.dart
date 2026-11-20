@@ -182,7 +182,7 @@ class _PageViewScreenState extends State<PageViewScreen> {
             onPageChanged: (i) => setState(() => _i = i),
             itemBuilder: (_, i) => InteractiveViewer(
               maxScale: 5,
-              child: Center(child: Image.file(File(_pages[i].imagePath), key: ValueKey(_pages[i].imagePath))),
+              child: Center(child: Image.file(File(_pages[i].imagePath), key: ValueKey(_pages[i].imagePath), cacheWidth: 1600, filterQuality: FilterQuality.medium)),
             ),
           ),
         if (ready && (_pg.note ?? '').isNotEmpty)
