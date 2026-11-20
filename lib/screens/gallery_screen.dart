@@ -15,13 +15,16 @@
 
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import '../models/scan_document.dart';
+import '../models/scan_recipe.dart';
 import '../services/app_settings.dart';
 import '../services/backup_service.dart';
 import '../services/import_service.dart';
 import '../services/update_service.dart';
 import '../services/document_repository.dart';
+import '../services/image_processing_service.dart';
 import '../services/pdf_exporter.dart';
 import '../theme/app_themes.dart';
 import '../widgets/cs_bars.dart';
@@ -30,12 +33,13 @@ import '../widgets/ocr_sheet.dart';
 import '../widgets/theme_picker_sheet.dart';
 import 'camera_screen.dart';
 import 'document_screen.dart';
+import 'markup_screen.dart';
 import 'pdf_view_screen.dart';
 import 'settings_screen.dart';
 import 'share_screen.dart';
 import 'trash_screen.dart';
 
-const _appVersion = '1.5';
+const _appVersion = '1.6';
 const _apkLink = 'https://github.com/keplerdeskadmin-cpu/kelmo-scan/releases/latest/download/KelmoScan-arm64.apk';
 
 /// "Oct-21, 15:47" — the date style used in the document list.
@@ -70,6 +74,11 @@ class _GalleryScreenState extends State<GalleryScreen> {
   bool _searching = false, _busy = false, _selectMode = false;
   String _q = '';
   final Set<int> _sel = {};
+  int _tab = 0; // dashboard style: 0 = Home, 1 = Docs
+  ({int pages, int bytes, int month}) _st = (pages: 0, bytes: 0, month: 0);
+  List<ScanDocument> _recent = [];
+
+  bool get _dash => _settings.homeStyle == 'dashboard';
 
   @override
   void initState() {
@@ -85,8 +94,11 @@ class _GalleryScreenState extends State<GalleryScreen> {
     final d = await _repo.documents(folderId: _folder?.id, query: _q);
     final t = await _repo.totalDocuments();
     final tr = await _repo.trashCount();
+    final st = await _repo.stats();
+    final rec = (_folder == null && _q.isEmpty) ? d.toList() : await _repo.documents();
+    rec.sort((a, b) => b.updated.compareTo(a.updated));
     _sort(d);
-    if (mounted) setState(() { _folders = f; _docs = d; _total = t; _trash = tr; });
+    if (mounted) setState(() { _folders = f; _docs = d; _total = t; _trash = tr; _st = st; _recent = rec.take(5).toList(); });
   }
 
   void _sort(List<ScanDocument> d) => sortDocs(d, _settings.homeSort, _settings.homeSortAsc);
@@ -330,30 +342,74 @@ class _GalleryScreenState extends State<GalleryScreen> {
         applicationLegalese: 'Free & open-source (GPLv3)\nNo ads • No tracking • 100% offline',
       );
 
+  // ───────── dashboard quick actions
+  Future<void> _quickStamp() async {
+    final docs = await _repo.documents();
+    if (!mounted) return;
+    if (docs.isEmpty) { _snack('Scan a document first'); return; }
+    final id = await showDialog<int>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Stamp which document?'),
+        children: [
+          for (final d in docs.take(30))
+            SimpleDialogOption(onPressed: () => Navigator.pop(ctx, d.id), child: Text(d.title, style: const TextStyle(fontSize: 16))),
+        ],
+      ),
+    );
+    if (id == null || !mounted) return;
+    final pg = (await _repo.pages(id)).first;
+    if (!mounted) return;
+    final out = await Navigator.push<String>(context, MaterialPageRoute(builder: (_) => MarkupScreen(imagePath: pg.imagePath, openStamp: true)));
+    if (out == null) return;
+    await _work(() async {
+      final thumb = await ImageProcessingService.instance.applyFilter(out, FilterMode.original, maxSide: 360);
+      await _repo.replacePage(pg.id, ScannedPage(origPath: out, finalPath: out, thumbPath: thumb, filter: 'original',
+          corners: const [Offset(0, 0), Offset(1, 0), Offset(1, 1), Offset(0, 1)]));
+      imageCache.clear();
+      _snack('Stamp added');
+    });
+  }
+
+  Future<void> _quickOcr() async {
+    final x = await ImagePicker().pickImage(source: ImageSource.gallery);
+    if (x != null && mounted) OcrSheet.show(context, [x.path]);
+  }
+
+  Future<void> _scanAs(ScanKind k) async {
+    final ok = await Navigator.push<bool>(context,
+        MaterialPageRoute(builder: (_) => CameraScreen(folderId: _folder?.id, recipe: ScanRecipe.byName(k.name))));
+    if (ok == true) _reload();
+  }
+
   // ───────── UI
   @override
   Widget build(BuildContext context) {
     final p = context.pal;
     final selecting = _selectMode || _sel.isNotEmpty;
     final inFolder = _folder != null;
+    final onHome = _dash && _tab == 0 && !_searching && !inFolder && !selecting;
     return PopScope(
-      canPop: !selecting && !_searching && !inFolder,
+      canPop: !selecting && !_searching && !inFolder && !(_dash && _tab == 1),
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
         if (selecting) { _endSelect(); return; }
         if (_searching) { setState(() { _searching = false; _q = ''; }); _reload(); return; }
-        if (inFolder) { setState(() => _folder = null); _reload(); }
+        if (inFolder) { setState(() => _folder = null); _reload(); return; }
+        if (_dash && _tab == 1) setState(() => _tab = 0);
       },
       child: Scaffold(
         key: _key,
-        backgroundColor: p.background,
         drawer: _drawer(p),
+        backgroundColor: onHome ? const Color(0xFFF2F5F5) : p.background,
         appBar: selecting ? _selectBar(p) : _mainBar(p),
         body: Stack(children: [
-          RefreshIndicator(onRefresh: _reload, color: p.accent, child: _settings.homeGrid ? _grid(p) : _list(p)),
+          RefreshIndicator(
+              onRefresh: _reload, color: p.accent,
+              child: onHome ? _dashboard(p) : _settings.homeGrid ? _grid(p) : _list(p)),
           if (_busy) Container(color: Colors.black38, child: Center(child: CircularProgressIndicator(color: p.accent))),
         ]),
-        bottomNavigationBar: selecting ? null : _bottomBar(p),
+        bottomNavigationBar: selecting ? null : _dash ? _navBar(p) : _bottomBar(p),
       ),
     );
   }
@@ -375,9 +431,12 @@ class _GalleryScreenState extends State<GalleryScreen> {
                     border: InputBorder.none, hintText: 'Search name or text…', hintStyle: TextStyle(color: p.onAppBar.withAlpha(150))),
                 onChanged: (v) { _q = v; _reload(); },
               )
-            : Text(_folder != null ? '${_folder!.name} (${_docs.length})' : 'My Docs ($_total)'),
+            : Text(_folder != null
+                ? '${_folder!.name} (${_docs.length})'
+                : (_dash && _tab == 0) ? 'Kelmo Scan' : 'My Docs ($_total)'),
         actions: [
-          if (!_searching) IconButton(icon: const Icon(Icons.search), tooltip: 'Search', onPressed: () => setState(() => _searching = true)),
+          if (!_searching)
+            IconButton(icon: const Icon(Icons.search), tooltip: 'Search', onPressed: () => setState(() { _searching = true; _tab = 1; })),
           if (!_searching) IconButton(icon: const Icon(Icons.cloud_outlined), tooltip: 'Sync to Cloud', onPressed: _syncToCloud),
           if (!_searching)
             PopupMenuButton<String>(
@@ -500,6 +559,240 @@ class _GalleryScreenState extends State<GalleryScreen> {
           ]),
         ),
       ]),
+    );
+  }
+
+  // ───────── dashboard (accounts-app style)
+  Widget _card({required Widget child, EdgeInsets pad = const EdgeInsets.all(14), VoidCallback? onTap}) => Material(
+        color: Colors.white,
+        elevation: 0,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: onTap,
+          child: Container(
+            padding: pad,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFE3E9E9)),
+              boxShadow: const [BoxShadow(color: Color(0x0F000000), blurRadius: 10, offset: Offset(0, 3))],
+            ),
+            child: child,
+          ),
+        ),
+      );
+
+  Widget _stat(AppPalette p, IconData i, String value, String label, Color c, VoidCallback? onTap) => _card(
+        onTap: onTap,
+        child: Row(children: [
+          Container(
+            width: 44, height: 44,
+            decoration: BoxDecoration(color: c.withAlpha(30), borderRadius: BorderRadius.circular(12)),
+            child: Icon(i, color: c),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
+              FittedBox(
+                fit: BoxFit.scaleDown, alignment: Alignment.centerLeft,
+                child: Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Color(0xFF17262A))),
+              ),
+              Text(label, style: const TextStyle(fontSize: 13, color: Color(0xFF6F7777))),
+            ]),
+          ),
+        ]),
+      );
+
+  Widget _action(AppPalette p, IconData i, String label, VoidCallback onTap) => InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+              width: 54, height: 54,
+              decoration: BoxDecoration(
+                color: Colors.white, borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFFE3E9E9)),
+                boxShadow: const [BoxShadow(color: Color(0x0D000000), blurRadius: 6, offset: Offset(0, 2))],
+              ),
+              child: Icon(i, color: p.accent, size: 26),
+            ),
+            const SizedBox(height: 6),
+            Text(label, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, color: Color(0xFF2B3A3D), fontWeight: FontWeight.w500)),
+          ]),
+        ),
+      );
+
+  Widget _title(String t, {String? link, VoidCallback? onLink}) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 18, 8, 8),
+        child: Row(children: [
+          Text(t, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: Color(0xFF17262A))),
+          const Spacer(),
+          if (link != null) TextButton(onPressed: onLink, child: Text(link)),
+        ]),
+      );
+
+  String _greeting() {
+    final h = DateTime.now().hour;
+    return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+  }
+
+  Widget _dashboard(AppPalette p) {
+    const m = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const wd = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    final now = DateTime.now();
+    final light = Color.lerp(p.appBar, Colors.white, .18)!;
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.only(bottom: 24),
+      children: [
+        Container(
+          padding: const EdgeInsets.fromLTRB(18, 16, 18, 22),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(colors: [p.appBar, light], begin: Alignment.topLeft, end: Alignment.bottomRight),
+            borderRadius: const BorderRadius.vertical(bottom: Radius.circular(26)),
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Assalam o Alaikum 👋', style: TextStyle(color: Colors.white.withAlpha(230), fontSize: 15)),
+            const SizedBox(height: 2),
+            Text(_greeting(), style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w800)),
+            const SizedBox(height: 4),
+            Text('${wd[now.weekday - 1]}, ${now.day} ${m[now.month - 1]} ${now.year}',
+                style: TextStyle(color: Colors.white.withAlpha(200), fontSize: 13)),
+            const SizedBox(height: 16),
+            Row(children: [
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Total documents', style: TextStyle(color: Colors.white.withAlpha(200), fontSize: 13)),
+                  Text('$_total', style: const TextStyle(color: Colors.white, fontSize: 34, fontWeight: FontWeight.w900, height: 1.1)),
+                ]),
+              ),
+              FilledButton.icon(
+                style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: p.appBar,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+                onPressed: _camera,
+                icon: const Icon(Icons.photo_camera),
+                label: const Text('Scan', style: TextStyle(fontWeight: FontWeight.w700)),
+              ),
+            ]),
+          ]),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 14, 12, 0),
+          child: GridView.count(
+            crossAxisCount: 2, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
+            mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 2.15,
+            children: [
+              _stat(p, Icons.description, '$_total', 'Documents', const Color(0xFF1565C0), () => setState(() => _tab = 1)),
+              _stat(p, Icons.layers, '${_st.pages}', 'Pages', const Color(0xFF6A1B9A), null),
+              _stat(p, Icons.calendar_month, '${_st.month}', 'This month', const Color(0xFF2E7D32), null),
+              _stat(p, Icons.sd_storage, sizeLabel(_st.bytes), 'Storage', const Color(0xFFEF6C00), null),
+            ],
+          ),
+        ),
+        _title('Quick actions'),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: GridView.count(
+            crossAxisCount: 4, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), childAspectRatio: .9,
+            children: [
+              _action(p, Icons.document_scanner, 'Scan', _camera),
+              _action(p, Icons.picture_as_pdf, 'Import PDF', _importPdf),
+              _action(p, Icons.badge, 'ID Card', () => _scanAs(ScanKind.idCard)),
+              _action(p, Icons.menu_book, 'Passport', () => _scanAs(ScanKind.passport)),
+              _action(p, Icons.approval, 'Stamp', _quickStamp),
+              _action(p, Icons.text_fields, 'OCR', _quickOcr),
+              _action(p, Icons.add_photo_alternate, 'Images', () => _camera(gallery: true)),
+              _action(p, Icons.create_new_folder, 'New Folder', () => _menu('folder')),
+            ],
+          ),
+        ),
+        _title('Recent documents', link: _recent.isEmpty ? null : 'See all', onLink: () => setState(() => _tab = 1)),
+        if (_recent.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: _card(
+              onTap: _camera,
+              child: Row(children: [
+                Icon(Icons.info_outline, color: p.accent),
+                const SizedBox(width: 12),
+                const Expanded(child: Text('No documents yet. Tap Scan to start.', style: TextStyle(color: Color(0xFF6F7777)))),
+              ]),
+            ),
+          ),
+        for (final d in _recent)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: _card(
+              pad: const EdgeInsets.all(10),
+              onTap: () => _openDoc(d),
+              child: Row(children: [
+                ClipRRect(borderRadius: BorderRadius.circular(8), child: _thumb(d.thumbPath, w: 48, h: 60)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(d.title, maxLines: 1, overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Color(0xFF17262A))),
+                    const SizedBox(height: 3),
+                    Text('${d.pageCount} ${d.pageCount == 1 ? 'page' : 'pages'} • ${sizeLabel(d.bytes)}',
+                        style: const TextStyle(fontSize: 13, color: Color(0xFF6F7777))),
+                  ]),
+                ),
+                Text(listDate(d.updated).split(', ').last, style: const TextStyle(fontSize: 12, color: Color(0xFF6F7777))),
+                const Icon(Icons.chevron_right, color: Color(0xFFA1AAA5)),
+              ]),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _navBar(AppPalette p) {
+    Widget item(IconData i, String t, bool sel, VoidCallback onTap) => Expanded(
+          child: InkWell(
+            onTap: onTap,
+            child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(i, color: sel ? p.accent : const Color(0xFF8A9494)),
+              const SizedBox(height: 2),
+              Text(t, style: TextStyle(fontSize: 11, color: sel ? p.accent : const Color(0xFF8A9494),
+                  fontWeight: sel ? FontWeight.w700 : FontWeight.w500)),
+            ]),
+          ),
+        );
+    return Container(
+      decoration: const BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: Color(0xFFE3E9E9)))),
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 64,
+          child: Row(children: [
+            item(Icons.dashboard, 'Home', _tab == 0, () {
+              setState(() { _tab = 0; _searching = false; _q = ''; _folder = null; });
+              _reload();
+            }),
+            item(Icons.folder_copy, 'Docs', _tab == 1, () => setState(() => _tab = 1)),
+            Expanded(
+              child: Center(
+                child: GestureDetector(
+                  onTap: _camera,
+                  child: Container(
+                    width: 56, height: 56,
+                    decoration: BoxDecoration(
+                      color: p.accent, shape: BoxShape.circle,
+                      boxShadow: [BoxShadow(color: p.accent.withAlpha(90), blurRadius: 10, offset: const Offset(0, 4))],
+                    ),
+                    child: const Icon(Icons.photo_camera, color: Colors.white, size: 28),
+                  ),
+                ),
+              ),
+            ),
+            item(Icons.delete_outline, 'Trash', false, () => _push(const TrashScreen())),
+            item(Icons.settings_outlined, 'Settings', false, () => _push(const SettingsScreen())),
+          ]),
+        ),
+      ),
     );
   }
 

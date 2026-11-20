@@ -186,6 +186,18 @@ class DocumentRepository {
   Future<void> setFavorite(int id, bool v) =>
       _db.update('documents', {'fav': v ? 1 : 0}, where: 'id = ?', whereArgs: [id]);
 
+  /// Dashboard numbers: pages, bytes, documents created this month.
+  Future<({int pages, int bytes, int month})> stats() async {
+    final r = (await _db.rawQuery('SELECT COUNT(*) AS n, COALESCE(SUM(p.bytes), 0) AS b FROM pages p '
+        'JOIN documents d ON d.id = p.doc_id WHERE d.trashed IS NULL')).first;
+    final n = DateTime.now();
+    final from = DateTime(n.year, n.month).millisecondsSinceEpoch;
+    final m = Sqflite.firstIntValue(
+            await _db.rawQuery('SELECT COUNT(*) FROM documents WHERE trashed IS NULL AND created >= ?', [from])) ??
+        0;
+    return (pages: (r['n'] as num).toInt(), bytes: (r['b'] as num).toInt(), month: m);
+  }
+
   Future<Map<String, int>> kindCounts() async {
     final rows = await _db.rawQuery('SELECT kind, COUNT(*) AS c FROM documents WHERE trashed IS NULL GROUP BY kind');
     return {for (final r in rows) r['kind'] as String: (r['c'] as num).toInt()};

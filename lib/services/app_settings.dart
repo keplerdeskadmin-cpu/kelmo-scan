@@ -100,6 +100,10 @@ class AppSettings {
   bool get syncWarnMobile => _p.getBool('syncWarnMobile') ?? true;
   set syncWarnMobile(bool v) { _p.setBool('syncWarnMobile', v); }
 
+  /// Home screen: dashboard (cards + quick actions) | classic (Clear Scanner list).
+  String get homeStyle => _p.getString('homeStyle') ?? 'dashboard';
+  set homeStyle(String v) { _p.setString('homeStyle', v); }
+
   bool get autoUpdateCheck => _p.getBool('autoUpdateCheck') ?? true;
   set autoUpdateCheck(bool v) { _p.setBool('autoUpdateCheck', v); }
   int get lastUpdateCheck => _p.getInt('lastUpdateCheck') ?? 0;

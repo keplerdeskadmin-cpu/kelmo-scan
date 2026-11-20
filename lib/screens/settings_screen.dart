@@ -163,6 +163,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ListView(children: [
           _section(p, 'Theme'),
           _pref(p, 'Choose theme', summary: p.name, icon: Icons.palette, onTap: () => ThemePickerSheet.show(context)),
+          _list(p, 'Home screen', const {'dashboard': 'Dashboard (cards + quick actions)', 'classic': 'Classic list (Clear Scanner)'},
+              _s.homeStyle, (v) => _s.homeStyle = v, icon: Icons.dashboard),
 
           _section(p, 'Scan'),
           _pref(p, 'Use in-app camera (batch scan support)', icon: Icons.photo_camera,
