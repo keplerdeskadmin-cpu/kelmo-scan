@@ -25,6 +25,7 @@ import '../widgets/cs_bars.dart';
 import '../widgets/dialogs.dart';
 import '../widgets/ocr_sheet.dart';
 import 'edit_scan_screen.dart';
+import 'markup_screen.dart';
 import 'redact_screen.dart';
 import 'share_screen.dart';
 
@@ -78,9 +79,10 @@ class _PageViewScreenState extends State<PageViewScreen> {
     if (mounted) setState(() => _busy = false);
   }
 
-  Future<void> _markup() async {
+  Future<void> _markup({bool redact = false}) async {
     final pg = _pg;
-    final out = await Navigator.push<String>(context, MaterialPageRoute(builder: (_) => RedactScreen(imagePath: pg.imagePath)));
+    final out = await Navigator.push<String>(context, MaterialPageRoute(
+        builder: (_) => redact ? RedactScreen(imagePath: pg.imagePath) : MarkupScreen(imagePath: pg.imagePath)));
     if (out == null) return;
     setState(() => _busy = true);
     final thumb = await ImageProcessingService.instance.applyFilter(out, FilterMode.original, maxSide: 360);
@@ -125,11 +127,16 @@ class _PageViewScreenState extends State<PageViewScreen> {
             maxLines: 1, overflow: TextOverflow.ellipsis),
         actions: [
           IconButton(icon: const Icon(Icons.crop), tooltip: 'Crop & filter', onPressed: ready ? _edit : null),
-          IconButton(icon: const Icon(Icons.edit), tooltip: 'Markup', onPressed: ready ? _markup : null),
+          IconButton(icon: const Icon(Icons.edit), tooltip: 'Markup', onPressed: ready ? () => _markup() : null),
           PopupMenuButton<String>(
             color: Colors.white,
-            onSelected: (v) => v == 'delete' ? _delete() : runMoreAction(context, v, [_pg], widget.title),
+            onSelected: (v) => v == 'delete'
+                ? _delete()
+                : v == 'redact'
+                    ? _markup(redact: true)
+                    : runMoreAction(context, v, [_pg], widget.title),
             itemBuilder: (_) => [
+              csMenuItem('redact', Icons.format_color_fill, 'Redact / blur / highlight'),
               csMenuItem('gallery', Icons.photo_library, 'Save to Gallery'),
               csMenuItem('delete', Icons.delete_outline, 'Delete page'),
             ],

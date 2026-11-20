@@ -27,6 +27,7 @@ import '../widgets/dialogs.dart';
 import '../widgets/ocr_sheet.dart';
 import 'camera_screen.dart';
 import 'edit_scan_screen.dart';
+import 'markup_screen.dart';
 import 'page_view_screen.dart';
 import 'pdf_view_screen.dart';
 import 'redact_screen.dart';
@@ -110,8 +111,9 @@ class _DocumentScreenState extends State<DocumentScreen> {
     _load();
   }
 
-  Future<void> _markupPage(ScanPage pg) async {
-    final out = await Navigator.push<String>(context, MaterialPageRoute(builder: (_) => RedactScreen(imagePath: pg.imagePath)));
+  Future<void> _markupPage(ScanPage pg, {bool redact = false}) async {
+    final out = await Navigator.push<String>(context, MaterialPageRoute(
+        builder: (_) => redact ? RedactScreen(imagePath: pg.imagePath) : MarkupScreen(imagePath: pg.imagePath)));
     if (out == null) return;
     setState(() => _busy = true);
     final thumb = await ImageProcessingService.instance.applyFilter(out, FilterMode.original, maxSide: 360);
@@ -153,7 +155,8 @@ class _DocumentScreenState extends State<DocumentScreen> {
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           ListTile(title: Text('Page ${i + 1}', style: const TextStyle(fontWeight: FontWeight.w600))),
           ListTile(leading: const Icon(Icons.crop), title: const Text('Crop & filter'), onTap: () => Navigator.pop(ctx, 'edit')),
-          ListTile(leading: const Icon(Icons.edit), title: const Text('Markup / redact'), onTap: () => Navigator.pop(ctx, 'markup')),
+          ListTile(leading: const Icon(Icons.edit), title: const Text('Markup & signature'), onTap: () => Navigator.pop(ctx, 'markup')),
+          ListTile(leading: const Icon(Icons.format_color_fill), title: const Text('Redact / blur / highlight'), onTap: () => Navigator.pop(ctx, 'redact')),
           ListTile(leading: const Icon(Icons.document_scanner_outlined), title: const Text('OCR (extract text)'), onTap: () => Navigator.pop(ctx, 'ocr')),
           if (i > 0) ListTile(leading: const Icon(Icons.arrow_back), title: const Text('Move earlier'), onTap: () => Navigator.pop(ctx, 'up')),
           if (i < _pages.length - 1)
@@ -165,6 +168,7 @@ class _DocumentScreenState extends State<DocumentScreen> {
     switch (v) {
       case 'edit': await _editPage(pg);
       case 'markup': await _markupPage(pg);
+      case 'redact': await _markupPage(pg, redact: true);
       case 'ocr': if (mounted) OcrSheet.show(context, [pg.imagePath]);
       case 'up': await _movePage(i, -1);
       case 'down': await _movePage(i, 1);
