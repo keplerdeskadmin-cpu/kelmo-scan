@@ -19,19 +19,22 @@ import 'package:share_plus/share_plus.dart';
 import '../models/scan_document.dart';
 import '../services/app_settings.dart';
 import '../services/backup_service.dart';
+import '../services/import_service.dart';
 import '../services/document_repository.dart';
 import '../services/pdf_exporter.dart';
 import '../theme/app_themes.dart';
+import '../widgets/cs_bars.dart';
 import '../widgets/dialogs.dart';
 import '../widgets/ocr_sheet.dart';
 import '../widgets/theme_picker_sheet.dart';
 import 'camera_screen.dart';
 import 'document_screen.dart';
+import 'pdf_view_screen.dart';
 import 'settings_screen.dart';
 import 'share_screen.dart';
 import 'trash_screen.dart';
 
-const _appVersion = '1.3';
+const _appVersion = '1.4';
 const _apkLink = 'https://github.com/keplerdeskadmin-cpu/kelmo-scan/releases/latest/download/KelmoScan-arm64.apk';
 
 /// "Oct-21, 15:47" — the date style used in the document list.
@@ -82,15 +85,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
     if (mounted) setState(() { _folders = f; _docs = d; _total = t; _trash = tr; });
   }
 
-  void _sort(List<ScanDocument> d) {
-    switch (_settings.homeSort) {
-      case 'date_asc': d.sort((a, b) => a.updated.compareTo(b.updated));
-      case 'name_asc': d.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
-      case 'name_desc': d.sort((a, b) => b.title.toLowerCase().compareTo(a.title.toLowerCase()));
-      case 'size_desc': d.sort((a, b) => b.bytes.compareTo(a.bytes));
-      default: d.sort((a, b) => b.updated.compareTo(a.updated));
-    }
-  }
+  void _sort(List<ScanDocument> d) => sortDocs(d, _settings.homeSort, _settings.homeSortAsc);
 
   void _snack(String m) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
 
@@ -117,44 +112,58 @@ class _GalleryScreenState extends State<GalleryScreen> {
       case 'select': setState(() { _selectMode = true; _sel.clear(); });
       case 'grid': _settings.homeGrid = !_settings.homeGrid; setState(() {});
       case 'sort': await _pickSort();
-      case 'pdf': _snack('Import PDF is coming in the next update');
+      case 'pdf': await _importPdf();
       case 'images': await _camera(gallery: true);
       case 'folder':
         final n = await promptText(context, 'New Folder', hint: 'Folder name');
         if (n != null) { await _repo.addFolder(n); _reload(); }
-      case 'blank': _snack('New Blank page is coming in the next update');
+      case 'blank': await _newBlank();
     }
   }
 
+  Future<void> _work(Future<void> Function() job) async {
+    setState(() => _busy = true);
+    try {
+      await job();
+    } catch (e) {
+      if (mounted) _snack('Failed: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+      _reload();
+    }
+  }
+
+  Future<void> _importPdf() async {
+    final imgs = await ImportService.pickPdfPages();
+    if (imgs == null) return;
+    await _work(() async {
+      if (imgs.isEmpty) throw Exception('This PDF has no pages (or it is password protected)');
+      final pages = await ImportService.pagesFromImages(imgs);
+      await _repo.createDocument(title: _settings.newDocumentName(), folderId: _folder?.id, pages: pages);
+      _snack('${pages.length} page(s) imported');
+    });
+  }
+
+  Future<void> _newBlank() => _work(() async {
+        final pg = await ImportService.pageFromImage(await ImportService.blankPage());
+        final id = await _repo.createDocument(title: _settings.newDocumentName(), folderId: _folder?.id, pages: [pg]);
+        if (mounted) await Navigator.push(context, MaterialPageRoute(builder: (_) => DocumentScreen(docId: id)));
+      });
+
   Future<void> _pickSort() async {
-    const opts = {
-      'date_desc': 'Date (newest first)',
-      'date_asc': 'Date (oldest first)',
-      'name_asc': 'Name (A – Z)',
-      'name_desc': 'Name (Z – A)',
-      'size_desc': 'Size (largest first)',
-    };
-    final cur = _settings.homeSort;
-    final v = await showDialog<String>(
-      context: context,
-      builder: (ctx) => SimpleDialog(
-        title: const Text('Sort by'),
-        children: [
-          for (final e in opts.entries)
-            ListTile(
-              leading: Icon(e.key == cur ? Icons.radio_button_checked : Icons.radio_button_off, color: context.pal.accent),
-              title: Text(e.value),
-              onTap: () => Navigator.pop(ctx, e.key),
-            ),
-        ],
-      ),
-    );
-    if (v != null) { _settings.homeSort = v; _reload(); }
+    final r = await pickSort(context, _settings.homeSort, _settings.homeSortAsc);
+    if (r != null) { _settings.homeSort = r.$1; _settings.homeSortAsc = r.$2; _reload(); }
   }
 
   // ───────── per-item actions
   Future<void> _docMenu(String v, ScanDocument d) async {
     switch (v) {
+      case 'preview':
+        final pages = await _repo.pages(d.id);
+        if (mounted) await Navigator.push(context, MaterialPageRoute(builder: (_) => PdfViewScreen(title: d.title, pages: pages)));
+      case 'email' || 'print' || 'gallery' || 'storage':
+        final pages = await _repo.pages(d.id);
+        if (mounted) await runMoreAction(context, v, pages, d.title);
       case 'share':
         final pages = await _repo.pages(d.id);
         if (mounted) await ShareScreen.open(context, d.title, pages);
@@ -244,6 +253,27 @@ class _GalleryScreenState extends State<GalleryScreen> {
     _endSelect();
     _reload();
     if (mounted) _snack('$n document(s) moved to Trash');
+  }
+
+  List<int> get _selInOrder => [for (final d in _docs) if (_sel.contains(d.id)) d.id];
+
+  Future<void> _mergeSelected() async {
+    if (_sel.length < 2) { _snack('Select 2 or more documents to merge'); return; }
+    final first = _docs.firstWhere((d) => d.id == _selInOrder.first);
+    final n = await promptText(context, 'Merge ${_sel.length} documents', initial: first.title, hint: 'New document name');
+    if (n == null) return;
+    final ids = _selInOrder;
+    _endSelect();
+    await _work(() async { await _repo.mergeDocuments(ids, n); _snack('Documents merged'); });
+  }
+
+  Future<void> _copySelected() async {
+    final ids = _selInOrder;
+    _endSelect();
+    await _work(() async {
+      for (final id in ids) { await _repo.copyDocument(id); }
+      _snack('${ids.length} document(s) copied');
+    });
   }
 
   Future<void> _moveSelected() async {
@@ -385,6 +415,15 @@ class _GalleryScreenState extends State<GalleryScreen> {
           IconButton(icon: const Icon(Icons.drive_file_move_outline), tooltip: 'Move', onPressed: _moveSelected),
           IconButton(icon: const Icon(Icons.share), tooltip: 'Share', onPressed: _shareSelected),
           IconButton(icon: const Icon(Icons.delete_outline), tooltip: 'Delete', onPressed: _trashSelected),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            color: Colors.white,
+            onSelected: (v) => v == 'merge' ? _mergeSelected() : _copySelected(),
+            itemBuilder: (_) => [
+              _mi('merge', Icons.merge_type, 'Merge'),
+              _mi('copy', Icons.file_copy, 'Copy'),
+            ],
+          ),
         ],
       );
 
@@ -482,7 +521,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
           const SizedBox(height: 120),
           Icon(Icons.description_outlined, size: 72, color: p.textMuted.withAlpha(120)),
           const SizedBox(height: 14),
-          Text(_q.isNotEmpty ? 'No matches' : 'No documents yet.\nTap the camera to scan.',
+          Text(_q.isNotEmpty ? 'No results found' : 'No documents yet.\nTap the camera to scan.',
               textAlign: TextAlign.center, style: TextStyle(color: p.textMuted, fontSize: 16)),
         ],
       );
@@ -550,12 +589,18 @@ class _GalleryScreenState extends State<GalleryScreen> {
                 color: Colors.white,
                 onSelected: (v) => _docMenu(v, d),
                 itemBuilder: (_) => [
+                  _mi('preview', Icons.picture_as_pdf, 'PDF Preview'),
                   _mi('share', Icons.share, 'Share'),
-                  _mi('ocr', Icons.text_fields, 'Extract text (OCR)'),
+                  _mi('email', Icons.email, 'Send Email'),
+                  _mi('print', Icons.print, 'Print'),
+                  const PopupMenuDivider(),
+                  _mi('gallery', Icons.photo_library, 'Save to Gallery'),
+                  _mi('storage', Icons.save, 'Save to storage'),
+                  const PopupMenuDivider(),
                   _mi('rename', Icons.edit, 'Rename'),
-                  _mi('move', Icons.drive_file_move_outline, 'Move to folder'),
-                  _mi('fav', d.fav ? Icons.star : Icons.star_border, d.fav ? 'Remove favorite' : 'Add to favorites'),
-                  _mi('delete', Icons.delete_outline, 'Delete'),
+                  _mi('move', Icons.drive_file_move, 'Move'),
+                  _mi('ocr', Icons.text_fields, 'Extract text (OCR)'),
+                  _mi('delete', Icons.delete, 'Delete'),
                 ],
               )
             else
@@ -653,4 +698,51 @@ class _GalleryScreenState extends State<GalleryScreen> {
       },
     );
   }
+}
+
+/// Sort used by Clear Scanner: Date created / Date modified / Name, ascending or descending.
+void sortDocs(List<ScanDocument> d, String field, bool asc) {
+  int c(ScanDocument a, ScanDocument b) => switch (field) {
+        'created' => a.created.compareTo(b.created),
+        'name' => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
+        _ => a.updated.compareTo(b.updated),
+      };
+  d.sort((a, b) => asc ? c(a, b) : c(b, a));
+}
+
+/// The "Sort" dialog: field radio list + Ascending / Descending.
+Future<(String, bool)?> pickSort(BuildContext context, String field, bool asc,
+    {Map<String, String> fields = const {'created': 'Date created', 'modified': 'Date modified', 'name': 'Name'}}) {
+  var f = field, a = asc;
+  final accent = context.pal.accent;
+  return showDialog<(String, bool)>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, set) => AlertDialog(
+        title: const Text('Sort'),
+        contentPadding: const EdgeInsets.fromLTRB(8, 12, 8, 0),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          for (final e in fields.entries)
+            RadioListTile<String>(
+              dense: true, activeColor: accent, value: e.key, groupValue: f,
+              title: Text(e.value, style: const TextStyle(fontSize: 16)),
+              onChanged: (v) => set(() => f = v!),
+            ),
+          const Divider(),
+          RadioListTile<bool>(
+            dense: true, activeColor: accent, value: true, groupValue: a,
+            title: const Text('Ascending', style: TextStyle(fontSize: 16)), onChanged: (v) => set(() => a = v!),
+          ),
+          RadioListTile<bool>(
+            dense: true, activeColor: accent, value: false, groupValue: a,
+            title: const Text('Descending', style: TextStyle(fontSize: 16)), onChanged: (v) => set(() => a = v!),
+          ),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('CANCEL')),
+          TextButton(onPressed: () => Navigator.pop(ctx, (f, a)), child: const Text('OK')),
+        ],
+      ),
+    ),
+  );
 }

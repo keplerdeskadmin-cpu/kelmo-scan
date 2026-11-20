@@ -16,6 +16,10 @@
 package com.kelmo.scan
 
 import android.content.ContentValues
+import android.content.Intent
+import android.graphics.Color
+import android.graphics.pdf.PdfRenderer
+import android.media.MediaActionSound
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.Bundle
@@ -30,6 +34,9 @@ import android.print.PrintManager
 import android.provider.MediaStore
 import android.view.WindowManager
 import androidx.annotation.RequiresApi
+import androidx.core.content.FileProvider
+import org.opencv.core.Mat
+import org.opencv.imgcodecs.Imgcodecs
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -98,6 +105,31 @@ class MainActivity : FlutterFragmentActivity() {   // BiometricPrompt needs a Fr
                         .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.BIOMETRIC_WEAK)
                         .build()
                     prompt.authenticate(info)
+                    return@setMethodCallHandler
+                }
+                if (call.method == "shutter") {
+                    try { MediaActionSound().play(MediaActionSound.SHUTTER_CLICK) } catch (_: Throwable) {}
+                    result.success(true)
+                    return@setMethodCallHandler
+                }
+                if (call.method == "emailFile") {
+                    try {
+                        val f = File(call.argument<String>("path")!!)
+                        val uri = FileProvider.getUriForFile(this, "$packageName.kelmo.files", f)
+                        val to = (call.argument<String>("to") ?: "").split(',', ';').map { it.trim() }.filter { it.isNotEmpty() }
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = call.argument<String>("mime") ?: "application/pdf"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            if (to.isNotEmpty()) putExtra(Intent.EXTRA_EMAIL, to.toTypedArray())
+                            putExtra(Intent.EXTRA_SUBJECT, call.argument<String>("subject") ?: "")
+                            putExtra(Intent.EXTRA_TEXT, call.argument<String>("body") ?: "")
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        startActivity(Intent.createChooser(send, "Send Email"))
+                        result.success(true)
+                    } catch (t: Throwable) {
+                        result.error("EMAIL_ERROR", t.message, null)
+                    }
                     return@setMethodCallHandler
                 }
                 if (call.method == "printPdf") {
@@ -209,6 +241,25 @@ class MainActivity : FlutterFragmentActivity() {   // BiometricPrompt needs a Fr
                                     throw IllegalStateException("Saving needs Android 10 or newer")
                                 }
                             }
+                            "renderPdf" -> renderPdf(
+                                call.argument<String>("path")!!, call.argument<String>("outDir")!!, call.argument<Int>("maxSide") ?: 2200)
+                            "blankPage" -> {
+                                val w = call.argument<Int>("width") ?: 2480
+                                val h = call.argument<Int>("height") ?: 3508
+                                val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565)
+                                bmp.eraseColor(Color.WHITE)
+                                FileOutputStream(call.argument<String>("out")!!).use { bmp.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+                                bmp.recycle()
+                                true
+                            }
+                            "adjust" -> {
+                                val src = Imgcodecs.imread(call.argument<String>("path")!!)
+                                val dst = Mat()
+                                src.convertTo(dst, -1, call.argument<Double>("contrast") ?: 1.0, call.argument<Double>("brightness") ?: 0.0)
+                                Imgcodecs.imwrite(call.argument<String>("out")!!, dst)
+                                src.release(); dst.release()
+                                true
+                            }
                             "rotate" -> {
                                 DocumentProcessor.rotate(call.argument<String>("path")!!, call.argument<String>("out")!!)
                                 true
@@ -221,6 +272,31 @@ class MainActivity : FlutterFragmentActivity() {   // BiometricPrompt needs a Fr
                     }
                 }
             }
+    }
+
+    /** Renders every page of a PDF to JPEG files (white background). Returns the file paths. */
+    private fun renderPdf(path: String, outDir: String, maxSide: Int): List<String> {
+        val out = mutableListOf<String>()
+        File(outDir).mkdirs()
+        ParcelFileDescriptor.open(File(path), ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
+            PdfRenderer(fd).use { r ->
+                for (i in 0 until r.pageCount) {
+                    r.openPage(i).use { page ->
+                        val scale = maxSide.toFloat() / maxOf(page.width, page.height)
+                        val w = maxOf(1, (page.width * scale).toInt())
+                        val h = maxOf(1, (page.height * scale).toInt())
+                        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                        bmp.eraseColor(Color.WHITE)
+                        page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        val f = File(outDir, "pdf_${System.currentTimeMillis()}_$i.jpg")
+                        FileOutputStream(f).use { bmp.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+                        bmp.recycle()
+                        out.add(f.absolutePath)
+                    }
+                }
+            }
+        }
+        return out
     }
 
     /** Copies a file into Pictures/Kelmo Scan (gallery) or Download/Kelmo Scan. Returns the visible path. */

@@ -50,7 +50,7 @@ class DocumentRepository {
     _root = Directory(p.join((await getApplicationDocumentsDirectory()).path, 'scans'))..createSync(recursive: true);
     _db = await openDatabase(
       p.join(await getDatabasesPath(), 'kelmo_scan.db'),
-      version: 5,
+      version: 6,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onUpgrade: (db, old, _) async {
         if (old < 2) await db.execute('ALTER TABLE pages ADD COLUMN ocr_text TEXT');
@@ -61,16 +61,20 @@ class DocumentRepository {
         }
         if (old < 4) await db.execute('ALTER TABLE documents ADD COLUMN trashed INTEGER');
         if (old < 5) await db.execute('ALTER TABLE pages ADD COLUMN note TEXT');
+        if (old < 6) {
+          await db.execute('ALTER TABLE pages ADD COLUMN title TEXT');
+          await db.execute('ALTER TABLE documents ADD COLUMN pdf_settings TEXT');
+        }
       },
       onCreate: (db, _) async {
         await db.execute('CREATE TABLE folders(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created INTEGER NOT NULL)');
         await db.execute('CREATE TABLE documents(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, '
             'folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL, '
-            "fav INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'document', trashed INTEGER)");
+            "fav INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'document', trashed INTEGER, pdf_settings TEXT)");
         await db.execute('CREATE TABLE pages(id INTEGER PRIMARY KEY AUTOINCREMENT, '
             'doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE, position INTEGER NOT NULL, '
             'image_path TEXT NOT NULL, thumb_path TEXT NOT NULL, orig_path TEXT NOT NULL, '
-            'corners TEXT NOT NULL, filter TEXT NOT NULL, bytes INTEGER NOT NULL, ocr_text TEXT, note TEXT)');
+            'corners TEXT NOT NULL, filter TEXT NOT NULL, bytes INTEGER NOT NULL, ocr_text TEXT, note TEXT, title TEXT)');
         await db.execute('CREATE INDEX idx_pages_doc ON pages(doc_id, position)');
         await _tagTables(db);
         final now = DateTime.now().millisecondsSinceEpoch;
@@ -236,6 +240,53 @@ class DocumentRepository {
     }, where: 'id = ?', whereArgs: [pageId]);
     for (final x in [old.imagePath, old.thumbPath, old.origPath]) { _rm(x); }
     await _touch(old.docId, {});
+  }
+
+  Future<void> setPageTitle(int pageId, String? title) =>
+      _db.update('pages', {'title': (title == null || title.trim().isEmpty) ? null : title.trim()}, where: 'id = ?', whereArgs: [pageId]);
+
+  /// Per-document PDF settings (JSON) or null = use the defaults from Settings.
+  Future<Map<String, dynamic>?> pdfSettings(int docId) async {
+    final r = await _db.query('documents', columns: ['pdf_settings'], where: 'id = ?', whereArgs: [docId]);
+    final v = r.isEmpty ? null : r.first['pdf_settings'] as String?;
+    return v == null ? null : Map<String, dynamic>.from(jsonDecode(v) as Map);
+  }
+
+  Future<void> setPdfSettings(int docId, Map<String, dynamic> v) =>
+      _db.update('documents', {'pdf_settings': jsonEncode(v)}, where: 'id = ?', whereArgs: [docId]);
+
+  ScannedPage _asScanned(ScanPage pg) => ScannedPage(
+      origPath: pg.origPath, finalPath: pg.imagePath, thumbPath: pg.thumbPath, corners: pg.corners, filter: pg.filter);
+
+  /// Copies pages (files too) to the end of [docId].
+  Future<void> copyPagesTo(List<ScanPage> pages, int docId) => addPages(docId, [for (final pg in pages) _asScanned(pg)]);
+
+  /// Moves pages to the end of [docId]; the source document is deleted if it becomes empty.
+  Future<void> movePagesTo(List<ScanPage> pages, int docId) async {
+    await copyPagesTo(pages, docId);
+    for (final pg in pages) { await deletePage(pg); }
+  }
+
+  /// New document with copies of [pages].
+  Future<int> newDocumentFromPages(String title, int? folderId, List<ScanPage> pages) =>
+      createDocument(title: title, folderId: folderId, pages: [for (final pg in pages) _asScanned(pg)]);
+
+  Future<int> copyDocument(int id) async {
+    final d = (await document(id))!;
+    return newDocumentFromPages('${d.title} (copy)', d.folderId, await pages(id));
+  }
+
+  /// Merges documents (in the given order) into a new one and removes the originals.
+  Future<int> mergeDocuments(List<int> ids, String title) async {
+    final all = <ScanPage>[];
+    int? folder;
+    for (final id in ids) {
+      folder ??= (await document(id))?.folderId;
+      all.addAll(await pages(id));
+    }
+    final nid = await newDocumentFromPages(title, folder, all);
+    for (final id in ids) { await deleteDocument(id); }
+    return nid;
   }
 
   Future<void> setPageNote(int pageId, String? note) =>

@@ -35,7 +35,7 @@ class Folder {
 
 class ScanDocument {
   ScanDocument({
-    required this.id, required this.title, required this.folderId, required this.updated,
+    required this.id, required this.title, required this.folderId, required this.updated, required this.created,
     required this.pageCount, required this.bytes, this.thumbPath,
     this.fav = false, this.kind = 'document', this.tags = const [],
   });
@@ -47,6 +47,7 @@ class ScanDocument {
       title: r['title'] as String,
       folderId: r['folder_id'] as int?,
       updated: DateTime.fromMillisecondsSinceEpoch(r['updated'] as int),
+      created: DateTime.fromMillisecondsSinceEpoch((r['created'] as int?) ?? (r['updated'] as int)),
       pageCount: (r['pc'] as num).toInt(),
       bytes: (r['bytes'] as num).toInt(),
       thumbPath: r['thumb'] as String?,
@@ -59,7 +60,7 @@ class ScanDocument {
   final int id, pageCount, bytes;
   final String title;
   final int? folderId;
-  final DateTime updated;
+  final DateTime updated, created;
   final String? thumbPath;
   final bool fav;
   final String kind;
@@ -75,7 +76,7 @@ class ScanDocument {
 /// A page stored in the database.
 class ScanPage {
   ScanPage({required this.id, required this.docId, required this.position, required this.imagePath,
-      required this.thumbPath, required this.origPath, required this.corners, required this.filter, this.note});
+      required this.thumbPath, required this.origPath, required this.corners, required this.filter, this.note, this.title});
 
   factory ScanPage.fromRow(Map<String, Object?> r) => ScanPage(
         id: r['id'] as int,
@@ -90,12 +91,13 @@ class ScanPage {
         ],
         filter: r['filter'] as String,
         note: r['note'] as String?,
+        title: r['title'] as String?,
       );
 
   final int id, docId, position;
   final String imagePath, thumbPath, origPath, filter;
   final List<Offset> corners;
-  final String? note;
+  final String? note, title;
 }
 
 /// Result returned by the edit screen (files are still in temp; repository copies them).

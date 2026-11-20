@@ -107,6 +107,30 @@ class _PageViewScreenState extends State<PageViewScreen> {
     _load();
   }
 
+  /// Rotates the page 90° clockwise (the original too, so a later crop stays correct).
+  Future<void> _rotate() async {
+    final pg = _pg;
+    setState(() => _busy = true);
+    try {
+      final svc = ImageProcessingService.instance;
+      final img = await svc.rotate90(pg.imagePath);
+      final thumb = await svc.applyFilter(img, FilterMode.original, maxSide: 360);
+      await _repo.replacePage(pg.id, ScannedPage(origPath: img, finalPath: img, thumbPath: thumb, filter: pg.filter,
+          corners: const [Offset(0, 0), Offset(1, 0), Offset(1, 1), Offset(0, 1)]));
+      imageCache.clear();
+      await _load();
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _pageTitle() async {
+    final v = await promptText(context, 'Page Title', initial: _pg.title ?? '', hint: 'Title of this page');
+    if (v == null) return;
+    await _repo.setPageTitle(_pg.id, v);
+    _load();
+  }
+
   Future<void> _delete() async {
     if (!await confirm(context, 'Delete page?', 'This page will be removed.')) return;
     final left = await _repo.deletePage(_pg);
@@ -123,22 +147,27 @@ class _PageViewScreenState extends State<PageViewScreen> {
       appBar: AppBar(
         backgroundColor: p.appBar,
         titleSpacing: 0,
-        title: Text(ready ? '${widget.title}  ${_i + 1}/${_pages.length}' : widget.title,
+        title: Text(ready ? '${(_pg.title ?? '').isNotEmpty ? _pg.title : widget.title}  ${_i + 1}/${_pages.length}' : widget.title,
             maxLines: 1, overflow: TextOverflow.ellipsis),
         actions: [
-          IconButton(icon: const Icon(Icons.crop), tooltip: 'Crop & filter', onPressed: ready ? _edit : null),
+          IconButton(icon: const Icon(Icons.crop), tooltip: 'Crop image', onPressed: ready ? _edit : null),
           IconButton(icon: const Icon(Icons.edit), tooltip: 'Markup', onPressed: ready ? () => _markup() : null),
           PopupMenuButton<String>(
             color: Colors.white,
-            onSelected: (v) => v == 'delete'
-                ? _delete()
-                : v == 'redact'
-                    ? _markup(redact: true)
-                    : runMoreAction(context, v, [_pg], widget.title),
+            enabled: ready,
+            onSelected: (v) => switch (v) {
+              'rotate' => _rotate(),
+              'title' => _pageTitle(),
+              'delete' => _delete(),
+              'redact' => _markup(redact: true),
+              _ => runMoreAction(context, v, [_pg], widget.title),
+            },
             itemBuilder: (_) => [
+              csMenuItem('rotate', Icons.rotate_right, 'Rotate page'),
+              csMenuItem('title', Icons.title, 'Page Title'),
+              csMenuItem('delete', Icons.delete, 'Delete page'),
+              const PopupMenuDivider(),
               csMenuItem('redact', Icons.format_color_fill, 'Redact / blur / highlight'),
-              csMenuItem('gallery', Icons.photo_library, 'Save to Gallery'),
-              csMenuItem('delete', Icons.delete_outline, 'Delete page'),
             ],
           ),
         ],

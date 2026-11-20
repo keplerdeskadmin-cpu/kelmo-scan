@@ -17,7 +17,9 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import '../models/scan_document.dart';
+import '../services/app_settings.dart';
 import '../services/document_repository.dart';
+import '../services/import_service.dart';
 import '../services/doc_export.dart';
 import '../services/image_processing_service.dart';
 import '../services/ocr_indexer.dart';
@@ -25,8 +27,10 @@ import '../theme/app_themes.dart';
 import '../widgets/cs_bars.dart';
 import '../widgets/dialogs.dart';
 import '../widgets/ocr_sheet.dart';
+import '../widgets/pdf_settings_dialog.dart';
 import 'camera_screen.dart';
 import 'edit_scan_screen.dart';
+import 'gallery_screen.dart' show pickSort;
 import 'markup_screen.dart';
 import 'page_view_screen.dart';
 import 'pdf_view_screen.dart';
@@ -45,7 +49,8 @@ class _DocumentScreenState extends State<DocumentScreen> {
   final _repo = DocumentRepository.instance;
   ScanDocument? _doc;
   List<ScanPage> _pages = [];
-  bool _busy = false;
+  bool _busy = false, _selecting = false;
+  final Set<int> _sel = {};
 
   @override
   void initState() {
@@ -176,8 +181,125 @@ class _DocumentScreenState extends State<DocumentScreen> {
     }
   }
 
-  void _docMenu(String v) {
+  void _snack(String m) => ScaffoldMessenger.of(context)..hideCurrentSnackBar()..showSnackBar(SnackBar(content: Text(m)));
+
+  Future<void> _work(Future<void> Function() job) async {
+    setState(() => _busy = true);
+    try {
+      await job();
+    } catch (e) {
+      if (mounted) _snack('Failed: $e');
+    } finally {
+      imageCache.clear();
+      await _load();
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _importPdf() async {
+    final imgs = await ImportService.pickPdfPages();
+    if (imgs == null) return;
+    await _work(() async {
+      if (imgs.isEmpty) throw Exception('This PDF has no pages (or it is password protected)');
+      await _repo.addPages(widget.docId, await ImportService.pagesFromImages(imgs));
+      _snack('${imgs.length} page(s) imported');
+    });
+  }
+
+  Future<void> _importImages() async {
+    final imgs = await ImportService.pickImages();
+    if (imgs.isEmpty) return;
+    await _work(() async => _repo.addPages(widget.docId, await ImportService.pagesFromImages(imgs)));
+  }
+
+  Future<void> _blank() => _work(() async =>
+      _repo.addPages(widget.docId, [await ImportService.pageFromImage(await ImportService.blankPage())]));
+
+  Future<void> _sortPages() async {
+    final r = await pickSort(context, 'created', true, fields: const {'created': 'Date created', 'name': 'Page title'});
+    if (r == null) return;
+    final l = [..._pages];
+    int c(ScanPage a, ScanPage b) =>
+        r.$1 == 'name' ? (a.title ?? '').toLowerCase().compareTo((b.title ?? '').toLowerCase()) : a.id.compareTo(b.id);
+    l.sort((a, b) => r.$2 ? c(a, b) : c(b, a));
+    await _repo.reorder(widget.docId, [for (final x in l) x.id]);
+    _load();
+  }
+
+  // ───────── page selection (Move / Copy to Current / Existing / New Document)
+  List<ScanPage> get _selPages => [for (final x in _pages) if (_sel.contains(x.id)) x];
+  void _endSelect() => setState(() { _selecting = false; _sel.clear(); });
+  void _toggle(int id) => setState(() { if (!_sel.remove(id)) _sel.add(id); });
+
+  Future<void> _transfer(bool move) async {
+    final pages = _selPages;
+    if (pages.isEmpty) return;
+    final where = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text(move ? 'Move to' : 'Copy to'),
+        children: [
+          if (!move) SimpleDialogOption(onPressed: () => Navigator.pop(ctx, 'current'), child: const Text('Current Document', style: TextStyle(fontSize: 16))),
+          SimpleDialogOption(onPressed: () => Navigator.pop(ctx, 'existing'), child: const Text('Existing Document', style: TextStyle(fontSize: 16))),
+          SimpleDialogOption(onPressed: () => Navigator.pop(ctx, 'new'), child: const Text('New Document', style: TextStyle(fontSize: 16))),
+        ],
+      ),
+    );
+    if (where == null || !mounted) return;
+    int? target;
+    if (where == 'current') {
+      target = widget.docId;
+    } else if (where == 'existing') {
+      final docs = (await _repo.documents()).where((x) => x.id != widget.docId).toList();
+      if (!mounted) return;
+      if (docs.isEmpty) { _snack('No other documents'); return; }
+      target = await showDialog<int>(
+        context: context,
+        builder: (ctx) => SimpleDialog(
+          title: const Text('Select Document'),
+          children: [
+            for (final x in docs)
+              SimpleDialogOption(onPressed: () => Navigator.pop(ctx, x.id), child: Text(x.title, style: const TextStyle(fontSize: 16))),
+          ],
+        ),
+      );
+      if (target == null) return;
+    }
+    final allMoved = move && pages.length == _pages.length;
+    _endSelect();
+    await _work(() async {
+      if (where == 'new') {
+        await _repo.newDocumentFromPages(AppSettings.instance.newDocumentName(), _doc?.folderId, pages);
+        if (move) { for (final pg in pages) { await _repo.deletePage(pg); } }
+      } else if (move) {
+        await _repo.movePagesTo(pages, target!);
+      } else {
+        await _repo.copyPagesTo(pages, target!);
+      }
+      _snack('${pages.length} page(s) ${move ? 'moved' : 'copied'}');
+    });
+    if (allMoved && mounted) Navigator.pop(context);
+  }
+
+  Future<void> _deleteSelected() async {
+    final pages = _selPages;
+    if (pages.isEmpty) return;
+    if (!await confirm(context, 'Delete ${pages.length} page(s)?', 'The selected pages will be removed.')) return;
+    _endSelect();
+    var left = 1;
+    for (final pg in pages) { left = await _repo.deletePage(pg); }
+    if (left == 0 && mounted) { Navigator.pop(context); return; }
+    _load();
+  }
+
+  Future<void> _docMenu(String v) async {
     switch (v) {
+      case 'select': setState(() { _selecting = true; _sel.clear(); });
+      case 'sort': await _sortPages();
+      case 'pdf': await _importPdf();
+      case 'images': await _importImages();
+      case 'blank': await _blank();
+      case 'pdfset': await showPdfSettings(context, widget.docId);
       case 'rename': _rename();
       case 'move': _move();
       case 'fav': _repo.setFavorite(widget.docId, !(_doc?.fav ?? false)).then((_) => _load());
@@ -198,9 +320,12 @@ class _DocumentScreenState extends State<DocumentScreen> {
   Widget build(BuildContext context) {
     final p = context.pal;
     final d = _doc;
-    return Scaffold(
+    return PopScope(
+      canPop: !_selecting,
+      onPopInvokedWithResult: (didPop, _) { if (!didPop) _endSelect(); },
+      child: Scaffold(
       backgroundColor: const Color(0xFFE4E6E6),
-      appBar: AppBar(
+      appBar: _selecting ? _selectBar(p) : AppBar(
         backgroundColor: p.appBar,
         titleSpacing: 0,
         title: GestureDetector(
@@ -219,7 +344,16 @@ class _DocumentScreenState extends State<DocumentScreen> {
             color: Colors.white,
             onSelected: _docMenu,
             itemBuilder: (_) => [
+              csMenuItem('select', Icons.check_box, 'Select'),
+              csMenuItem('sort', Icons.sort, 'Sort'),
+              const PopupMenuDivider(),
+              csMenuItem('pdf', Icons.picture_as_pdf, 'Import PDF'),
+              csMenuItem('images', Icons.add_photo_alternate, 'Import images'),
+              csMenuItem('blank', Icons.note_add, 'New Blank page'),
+              const PopupMenuDivider(),
               csMenuItem('rename', Icons.edit, 'Rename'),
+              csMenuItem('pdfset', Icons.settings, 'PDF Settings'),
+              const PopupMenuDivider(),
               csMenuItem('move', Icons.drive_file_move_outline, 'Move to folder'),
               csMenuItem('fav', d?.fav == true ? Icons.star : Icons.star_border, d?.fav == true ? 'Remove favorite' : 'Add to favorites'),
               csMenuItem('tag', Icons.sell_outlined, 'Add tag'),
@@ -237,9 +371,10 @@ class _DocumentScreenState extends State<DocumentScreen> {
           itemCount: _pages.length,
           itemBuilder: (_, i) {
             final pg = _pages[i];
+            final sel = _sel.contains(pg.id);
             return GestureDetector(
-              onTap: () => _openPage(i),
-              onLongPress: () => _pageMenu(i),
+              onTap: () => _selecting ? _toggle(pg.id) : _openPage(i),
+              onLongPress: () => _selecting ? _toggle(pg.id) : _pageMenu(i),
               child: Container(
                 decoration: const BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 3)]),
                 child: Stack(children: [
@@ -262,13 +397,15 @@ class _DocumentScreenState extends State<DocumentScreen> {
                         ),
                         const SizedBox(width: 6),
                         Expanded(
-                          child: Text(_pageInfo(pg), maxLines: 1, overflow: TextOverflow.ellipsis,
+                          child: Text((pg.title ?? '').isNotEmpty ? pg.title! : _pageInfo(pg), maxLines: 1, overflow: TextOverflow.ellipsis,
                               style: const TextStyle(color: Colors.white, fontSize: 12)),
                         ),
                         if ((pg.note ?? '').isNotEmpty) const Icon(Icons.sticky_note_2, color: Colors.white, size: 14),
                       ]),
                     ),
                   ),
+                  if (_selecting)
+                    Positioned(left: 4, top: 4, child: Icon(sel ? Icons.check_box : Icons.check_box_outline_blank, color: p.accent, size: 26)),
                 ]),
               ),
             );
@@ -276,7 +413,7 @@ class _DocumentScreenState extends State<DocumentScreen> {
         ),
         if (_busy) Positioned.fill(child: Container(color: Colors.black26, child: Center(child: CircularProgressIndicator(color: p.accent)))),
       ]),
-      bottomNavigationBar: CsBottomBar(children: [
+      bottomNavigationBar: _selecting ? null : CsBottomBar(children: [
         const Spacer(),
         CsBarIcon(icon: Icons.image, tooltip: 'Add from gallery', onTap: d == null ? null : () => _addPages(gallery: true)),
         const SizedBox(width: 10),
@@ -285,6 +422,35 @@ class _DocumentScreenState extends State<DocumentScreen> {
         CsBarButton(icon: Icons.share, label: 'Share', onTap: _pages.isEmpty ? null : () => ShareScreen.open(context, _title, _pages)),
         CsMoreButton(pages: () => _pages, name: () => _title),
       ]),
+    ),
     );
   }
+
+  PreferredSizeWidget _selectBar(AppPalette p) => AppBar(
+        backgroundColor: p.appBar,
+        leading: IconButton(icon: const Icon(Icons.close), onPressed: _endSelect),
+        title: Text('${_sel.length} selected'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.select_all), tooltip: 'Select all',
+            onPressed: () => setState(() {
+              if (_sel.length == _pages.length) { _sel.clear(); } else { _sel.addAll(_pages.map((x) => x.id)); }
+            }),
+          ),
+          IconButton(
+            icon: const Icon(Icons.share), tooltip: 'Share',
+            onPressed: _sel.isEmpty ? null : () => ShareScreen.open(context, _title, _selPages),
+          ),
+          IconButton(icon: const Icon(Icons.delete), tooltip: 'Delete', onPressed: _sel.isEmpty ? null : _deleteSelected),
+          PopupMenuButton<String>(
+            color: Colors.white,
+            enabled: _sel.isNotEmpty,
+            onSelected: (v) => _transfer(v == 'move'),
+            itemBuilder: (_) => [
+              csMenuItem('move', Icons.drive_file_move, 'Move to…'),
+              csMenuItem('copy', Icons.file_copy, 'Copy to…'),
+            ],
+          ),
+        ],
+      );
 }

@@ -24,7 +24,10 @@ import 'package:share_plus/share_plus.dart';
 enum PdfSize {
   a4('A4', PdfPageFormat.a4),
   letter('Letter', PdfPageFormat.letter),
-  legal('Legal', PdfPageFormat.legal);
+  legal('Legal', PdfPageFormat.legal),
+  a3('A3', PdfPageFormat.a3),
+  a5('A5', PdfPageFormat.a5),
+  businessCard('Business Card', PdfPageFormat(3.5 * PdfPageFormat.inch, 2 * PdfPageFormat.inch));
 
   const PdfSize(this.label, this.format);
   final String label;
@@ -36,14 +39,19 @@ Future<Uint8List> _buildPdf(List<Object> a) async {
   final paths = (a[0] as List).cast<String>();
   final fmt = PdfPageFormat(a[1] as double, a[2] as double);
   final mark = a.length > 3 ? a[3] as String : '';
+  final orient = a.length > 4 ? a[4] as String : 'auto';
+  final fill = a.length > 5 && a[5] == true;
   final doc = pw.Document();
   for (final p in paths) {
     final img = pw.MemoryImage(File(p).readAsBytesSync());
+    final wide = (img.width ?? 1) > (img.height ?? 1);
+    final land = orient == 'landscape' || (orient == 'auto' && wide);
+    final pf = land ? PdfPageFormat(fmt.height, fmt.width) : fmt;
     doc.addPage(pw.Page(
-      pageFormat: fmt,
+      pageFormat: pf,
       margin: pw.EdgeInsets.zero,
       build: (_) => pw.Stack(alignment: pw.Alignment.center, children: [
-        pw.Center(child: pw.Image(img, fit: pw.BoxFit.contain)),
+        pw.Center(child: pw.Image(img, fit: fill ? pw.BoxFit.cover : pw.BoxFit.contain, width: pf.width, height: pf.height)),
         if (mark.isNotEmpty)
           pw.Transform.rotate(
             angle: 0.6,
@@ -59,8 +67,9 @@ Future<Uint8List> _buildPdf(List<Object> a) async {
 }
 
 class PdfExporter {
-  static Future<String> save(List<String> images, String name, {PdfSize size = PdfSize.a4, String watermark = ''}) async {
-    final bytes = await compute(_buildPdf, <Object>[images, size.format.width, size.format.height, watermark]);
+  static Future<String> save(List<String> images, String name,
+      {PdfSize size = PdfSize.a4, String watermark = '', String orientation = 'portrait', bool fill = false}) async {
+    final bytes = await compute(_buildPdf, <Object>[images, size.format.width, size.format.height, watermark, orientation, fill]);
     final dir = await getTemporaryDirectory();
     final safe = name.replaceAll(RegExp(r'[^\w\- ]+'), '_');
     final f = File('${dir.path}/$safe.pdf');

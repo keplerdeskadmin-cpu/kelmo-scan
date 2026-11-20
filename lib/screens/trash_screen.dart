@@ -30,7 +30,25 @@ class TrashScreen extends StatefulWidget {
 class _TrashScreenState extends State<TrashScreen> {
   final _repo = DocumentRepository.instance;
   List<ScanDocument> _docs = [];
-  bool _loaded = false;
+  bool _loaded = false, _selecting = false;
+  final Set<int> _sel = {};
+
+  void _endSelect() => setState(() { _selecting = false; _sel.clear(); });
+
+  Future<void> _restoreSelected() async {
+    final n = _sel.length;
+    for (final id in _sel) { await _repo.restoreDocument(id); }
+    _endSelect();
+    _load();
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$n document(s) restored')));
+  }
+
+  Future<void> _deleteSelected() async {
+    if (!await confirm(context, 'Delete forever?', '${_sel.length} document(s) cannot be recovered.', yes: 'Delete')) return;
+    for (final id in _sel) { await _repo.deleteDocument(id); }
+    _endSelect();
+    _load();
+  }
 
   @override
   void initState() {
@@ -65,16 +83,43 @@ class _TrashScreenState extends State<TrashScreen> {
   @override
   Widget build(BuildContext context) {
     final p = context.pal;
-    return Scaffold(
+    return PopScope(
+      canPop: !_selecting,
+      onPopInvokedWithResult: (didPop, _) { if (!didPop) _endSelect(); },
+      child: Scaffold(
       backgroundColor: Colors.white,
-      appBar: AppBar(
-        backgroundColor: p.appBar,
-        title: Text('Trash (${_docs.length})'),
-        actions: [
-          if (_docs.isNotEmpty)
-            TextButton(onPressed: _empty, child: Text('EMPTY', style: TextStyle(color: p.onAppBar, fontWeight: FontWeight.w600))),
-        ],
-      ),
+      appBar: _selecting
+          ? AppBar(
+              backgroundColor: p.appBar,
+              leading: IconButton(icon: const Icon(Icons.close), onPressed: _endSelect),
+              title: Text('${_sel.length} selected'),
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.select_all), tooltip: 'Select all',
+                  onPressed: () => setState(() {
+                    if (_sel.length == _docs.length) { _sel.clear(); } else { _sel.addAll(_docs.map((d) => d.id)); }
+                  }),
+                ),
+                IconButton(icon: const Icon(Icons.restore), tooltip: 'Restore selected items', onPressed: _sel.isEmpty ? null : _restoreSelected),
+                IconButton(icon: const Icon(Icons.delete_forever), tooltip: 'Permanently delete selected items',
+                    onPressed: _sel.isEmpty ? null : _deleteSelected),
+              ],
+            )
+          : AppBar(
+              backgroundColor: p.appBar,
+              title: Text('Trash (${_docs.length})'),
+              actions: [
+                if (_docs.isNotEmpty)
+                  PopupMenuButton<String>(
+                    color: Colors.white,
+                    onSelected: (v) => v == 'empty' ? _empty() : setState(() { _selecting = true; _sel.clear(); }),
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(value: 'empty', child: Text('Empty Trash')),
+                      PopupMenuItem(value: 'select', child: Text('Select')),
+                    ],
+                  ),
+              ],
+            ),
       body: !_loaded
           ? const SizedBox()
           : _docs.isEmpty
@@ -90,7 +135,12 @@ class _TrashScreenState extends State<TrashScreen> {
                   separatorBuilder: (_, __) => const Divider(height: 1, color: Color(0xFFE6E9E9)),
                   itemBuilder: (_, i) {
                     final d = _docs[i];
+                    final sel = _sel.contains(d.id);
                     return ListTile(
+                      selected: sel,
+                      selectedTileColor: const Color(0xFFE4EFEE),
+                      onTap: _selecting ? () => setState(() { if (!_sel.remove(d.id)) _sel.add(d.id); }) : null,
+                      onLongPress: () => setState(() { _selecting = true; if (!_sel.remove(d.id)) _sel.add(d.id); }),
                       contentPadding: const EdgeInsets.fromLTRB(8, 6, 0, 6),
                       leading: Container(
                         width: 80, height: 56,
@@ -101,7 +151,11 @@ class _TrashScreenState extends State<TrashScreen> {
                       ),
                       title: Text(d.title, maxLines: 2, overflow: TextOverflow.ellipsis),
                       subtitle: Text(d.meta),
-                      trailing: PopupMenuButton<String>(
+                      trailing: _selecting
+                          ? Padding(
+                              padding: const EdgeInsets.only(right: 12),
+                              child: Icon(sel ? Icons.check_box : Icons.check_box_outline_blank, color: p.accent))
+                          : PopupMenuButton<String>(
                         color: Colors.white,
                         onSelected: (v) => _act(v, d),
                         itemBuilder: (_) => const [
@@ -112,6 +166,7 @@ class _TrashScreenState extends State<TrashScreen> {
                     );
                   },
                 ),
+    ),
     );
   }
 }

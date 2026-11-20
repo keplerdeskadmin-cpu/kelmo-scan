@@ -22,7 +22,9 @@ import 'package:permission_handler/permission_handler.dart';
 import '../models/scan_document.dart';
 import '../models/scan_recipe.dart';
 import '../services/app_settings.dart';
+import '../services/doc_export.dart';
 import '../services/document_repository.dart';
+import '../services/import_service.dart';
 import '../services/ocr_indexer.dart';
 import '../services/image_processing_service.dart';
 import '../theme/app_themes.dart';
@@ -53,13 +55,30 @@ class _CameraScreenState extends State<CameraScreen> {
   List<Offset>? _quad, _prev;
   bool _busy = false, _flash = false, _auto = AppSettings.instance.autoCapture, _capturing = false, _multi = false, _saving = false;
   int _lastMs = 0, _stable = 0, _tab = 0;
+  final bool _inApp = AppSettings.instance.useInAppCamera;
 
   @override
   void initState() {
     super.initState();
     _applyRecipe(_recipe, remember: widget.recipe != null);
-    _init();
-    if (widget.startWithGallery) WidgetsBinding.instance.addPostFrameCallback((_) => _fromGallery());
+    if (_inApp) _init();
+    if (widget.startWithGallery) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _fromGallery());
+    } else if (!_inApp) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _systemCamera());
+    }
+  }
+
+  /// "Use in-app camera" OFF: take the photo with the phone's own camera app.
+  Future<void> _systemCamera() async {
+    _capturing = true;
+    final x = await ImagePicker().pickImage(source: ImageSource.camera, imageQuality: AppSettings.instance.jpegQuality);
+    if (!mounted) return;
+    if (x == null) {
+      if (_pages.isEmpty) { Navigator.pop(context, false); } else { await _finish(); }
+      return;
+    }
+    await _openEditor(x.path, await _svc.detectCorners(x.path));
   }
 
   void _applyRecipe(ScanRecipe r, {bool remember = true}) {
@@ -82,7 +101,9 @@ class _CameraScreenState extends State<CameraScreen> {
     }
     final cams = await availableCameras();
     final back = cams.firstWhere((c) => c.lensDirection == CameraLensDirection.back, orElse: () => cams.first);
-    final c = CameraController(back, ResolutionPreset.high, enableAudio: false, imageFormatGroup: ImageFormatGroup.yuv420);
+    final res = const {'low': ResolutionPreset.medium, 'medium': ResolutionPreset.high}[AppSettings.instance.imageQuality] ??
+        ResolutionPreset.veryHigh;
+    final c = CameraController(back, res, enableAudio: false, imageFormatGroup: ImageFormatGroup.yuv420);
     await c.initialize();
     if (!mounted) { await c.dispose(); return; }
     setState(() => _c = c);
@@ -134,6 +155,7 @@ class _CameraScreenState extends State<CameraScreen> {
     List<Offset>? corners;
     try {
       await c.stopImageStream();
+      unawaited(ImportService.shutter());
       path = (await c.takePicture()).path;
       corners = await _svc.detectCorners(path) ?? _quad;
     } catch (_) {}
@@ -169,6 +191,10 @@ class _CameraScreenState extends State<CameraScreen> {
   void _resume() {
     _stable = 0; _prev = null; _quad = null; _capturing = false;
     if (mounted) setState(() {});
+    if (!_inApp && _c == null) {
+      if (mounted && !_saving) WidgetsBinding.instance.addPostFrameCallback((_) => _systemCamera());
+      return;
+    }
     _startStream();
   }
 
@@ -176,7 +202,7 @@ class _CameraScreenState extends State<CameraScreen> {
     if (_pages.isEmpty || _saving) return;
     SaveResult? meta;
     if (widget.addToDocId == null) {
-      final suggested = '${_recipe.label} ${DocumentRepository.dateStamp()}';
+      final suggested = AppSettings.instance.newDocumentName();
       if (AppSettings.instance.askName) {
         meta = await SaveSheet.show(context,
             suggestedName: suggested, pageCount: _pages.length, folderId: widget.folderId, thumbPath: _pages.first.thumbPath);
@@ -187,11 +213,16 @@ class _CameraScreenState extends State<CameraScreen> {
     }
     setState(() => _saving = true);
     final repo = DocumentRepository.instance;
+    var title = meta?.title ?? '';
     if (widget.addToDocId != null) {
       await repo.addPages(widget.addToDocId!, _pages);
+      title = (await repo.document(widget.addToDocId!))?.title ?? 'Kelmo Scan';
     } else {
       await repo.createDocument(
           title: meta!.title, folderId: meta.folderId, pages: _pages, kind: _recipe.kind.name, tags: meta.tags);
+    }
+    if (AppSettings.instance.autoSaveToGallery) {
+      unawaited(DocExport.imagesToGallery([for (final x in _pages) x.finalPath], title).catchError((_) => ''));
     }
     unawaited(OcrIndexer.run());
     if (mounted) Navigator.pop(context, true);

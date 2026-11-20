@@ -14,13 +14,13 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import 'dart:io';
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../models/scan_document.dart';
 import '../services/doc_export.dart';
 import '../theme/app_themes.dart';
 import '../widgets/cs_bars.dart';
 import '../widgets/dialogs.dart';
+import '../widgets/pdf_settings_dialog.dart';
 import 'share_screen.dart';
 
 /// "Document.pdf" preview: every page as it will look in the PDF, with File Size + Watermark.
@@ -35,6 +35,40 @@ class PdfViewScreen extends StatefulWidget {
 class _PdfViewScreenState extends State<PdfViewScreen> {
   ExportSize _size = ExportSize.small;
   String _mark = '';
+  PdfOpts _o = PdfOpts.defaults();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadOpts();
+  }
+
+  Future<void> _loadOpts() async {
+    final o = await PdfOpts.forDoc(widget.pages.isEmpty ? null : widget.pages.first.docId);
+    if (mounted) setState(() { _o = o; _size = o.quality; });
+    for (final pg in widget.pages) {
+      if (_wide.containsKey(pg.id)) continue;
+      FileImage(File(pg.thumbPath)).resolve(ImageConfiguration.empty).addListener(ImageStreamListener((info, _) {
+        _wide[pg.id] = info.image.width > info.image.height;
+        if (mounted) setState(() {});
+      }, onError: (_, __) {}));
+    }
+  }
+
+  Future<void> _settings() async {
+    if (widget.pages.isEmpty) return;
+    if (await showPdfSettings(context, widget.pages.first.docId)) _loadOpts();
+  }
+
+  /// Page aspect (width / height) as it will be in the PDF.
+  double _aspect(ScanPage pg) {
+    final f = _o.page.format;
+    final portrait = f.width / f.height;
+    final land = _o.orientation == 'landscape' || (_o.orientation == 'auto' && (_wide[pg.id] ?? false));
+    return land ? 1 / portrait : portrait;
+  }
+
+  final Map<int, bool> _wide = {};
 
   Future<void> _pickSize() async {
     final v = await showDialog<ExportSize>(
@@ -69,14 +103,7 @@ class _PdfViewScreenState extends State<PdfViewScreen> {
         titleSpacing: 0,
         title: Text('${widget.title}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
         actions: [
-          PopupMenuButton<String>(
-            color: Colors.white,
-            onSelected: (v) => runMoreAction(context, v, widget.pages, widget.title, watermark: _mark),
-            itemBuilder: (_) => [
-              csMenuItem('print', Icons.print, 'Print'),
-              csMenuItem('storage', Icons.save, 'Save to storage'),
-            ],
-          ),
+          IconButton(icon: const Icon(Icons.settings), tooltip: 'PDF Settings', onPressed: _settings),
         ],
       ),
       body: ListView.builder(
@@ -86,9 +113,11 @@ class _PdfViewScreenState extends State<PdfViewScreen> {
           margin: const EdgeInsets.only(bottom: 12),
           decoration: const BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 4)]),
           child: AspectRatio(
-            aspectRatio: 1 / math.sqrt2, // A4
+            aspectRatio: _aspect(widget.pages[i]),
             child: Stack(alignment: Alignment.center, children: [
-              Positioned.fill(child: Image.file(File(widget.pages[i].imagePath), fit: BoxFit.contain, cacheWidth: 1400)),
+              Positioned.fill(
+                child: Image.file(File(widget.pages[i].imagePath), fit: _o.fill ? BoxFit.cover : BoxFit.contain, cacheWidth: 1400),
+              ),
               if (_mark.isNotEmpty)
                 Transform.rotate(
                   angle: -0.6,
