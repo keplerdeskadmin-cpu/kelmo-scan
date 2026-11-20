@@ -20,11 +20,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
+      - name: Set up Flutter (same version as the original machine)
+        run: |
+          REV=$(grep -m1 'revision:' .metadata | sed 's/.*"\(.*\)".*/\1/')
+          echo "Flutter revision: $REV"
+          git clone --filter=blob:none --no-checkout https://github.com/flutter/flutter.git "$HOME/flutter"
+          git -C "$HOME/flutter" checkout -q "$REV"
+          echo "$HOME/flutter/bin" >> "$GITHUB_PATH"
 
       - name: Show versions
         run: flutter --version
