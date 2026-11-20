@@ -1,0 +1,167 @@
+// Kelmo Scan - document scanner
+// Copyright (C) 2026 Kelmo
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, version 3 of the License.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+package com.kelmo.scan
+
+import android.graphics.Bitmap
+import android.view.WindowManager
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
+import io.flutter.embedding.android.FlutterFragmentActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
+import org.opencv.android.OpenCVLoader
+import java.util.concurrent.Executors
+
+class MainActivity : FlutterFragmentActivity() {   // BiometricPrompt needs a FragmentActivity
+    // Single worker thread: serialises CV work, keeps UI + platform thread free.
+    private val worker = Executors.newSingleThreadExecutor()
+    // OCR is slow (seconds per page): own thread so live edge-detection never waits for it.
+    private val ocrWorker = Executors.newSingleThreadExecutor()
+
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        check(OpenCVLoader.initLocal()) { "OpenCV native libs failed to load" }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "doc_scanner/cv")
+            .setMethodCallHandler { call, result ->
+                // ── security helpers (main thread) ──
+                if (call.method == "biometricAvailable") {
+                    val auth = BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.BIOMETRIC_WEAK
+                    result.success(BiometricManager.from(this).canAuthenticate(auth) == BiometricManager.BIOMETRIC_SUCCESS)
+                    return@setMethodCallHandler
+                }
+                if (call.method == "biometricAuth") {
+                    var replied = false
+                    fun reply(ok: Boolean) { if (!replied) { replied = true; result.success(ok) } }
+                    val prompt = BiometricPrompt(this, ContextCompat.getMainExecutor(this),
+                        object : BiometricPrompt.AuthenticationCallback() {
+                            override fun onAuthenticationSucceeded(r: BiometricPrompt.AuthenticationResult) = reply(true)
+                            override fun onAuthenticationError(code: Int, msg: CharSequence) = reply(false)
+                        })
+                    val info = BiometricPrompt.PromptInfo.Builder()
+                        .setTitle(call.argument<String>("title") ?: "Unlock")
+                        .setNegativeButtonText("Use PIN")
+                        .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.BIOMETRIC_WEAK)
+                        .build()
+                    prompt.authenticate(info)
+                    return@setMethodCallHandler
+                }
+                if (call.method == "secureScreen") {
+                    if (call.argument<Boolean>("on") == true) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                    else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                    result.success(true)
+                    return@setMethodCallHandler
+                }
+                if (call.method == "ocrMrz") {
+                    ocrWorker.execute {
+                        try {
+                            val path = call.argument<String>("path")!!
+                            val probe = DocumentProcessor.prepareForOcr(path, 1100)
+                            val rot = try { TessEngine.bestRotation(applicationContext, probe) } finally { probe.recycle() }
+                            val full = DocumentProcessor.prepareForOcr(path, 3000, rot)
+                            val top = (full.height * 0.66).toInt()
+                            val crop = Bitmap.createBitmap(full, 0, top, full.width, full.height - top)   // MRZ = bottom third
+                            val text = try { TessEngine.recognizeMrz(applicationContext, crop) } finally { crop.recycle(); full.recycle() }
+                            runOnUiThread { result.success(text) }
+                        } catch (e: IllegalStateException) {
+                            runOnUiThread { result.error("OCR_INIT", e.message, null) }
+                        } catch (t: Throwable) {
+                            runOnUiThread { result.error("OCR_ERROR", t.message, null) }
+                        }
+                    }
+                    return@setMethodCallHandler
+                }
+                if (call.method == "ocr") {
+                    ocrWorker.execute {
+                        try {
+                            val path = call.argument<String>("path")!!
+                            val langs = call.argument<String>("langs") ?: "eng"
+                            // auto-orientation: probe 4 rotations with the English model on a small copy
+                            val probe = DocumentProcessor.prepareForOcr(path, 1100)
+                            val rot = try { TessEngine.bestRotation(applicationContext, probe) } finally { probe.recycle() }
+                            val text = if (langs.contains("urd")) {
+                                // Urdu: split into lines ourselves, then read line by line
+                                val lines = DocumentProcessor.segmentLines(path, 3200, rot)
+                                try { TessEngine.recognizeLines(applicationContext, lines, langs) }
+                                finally { lines.forEach { it.recycle() } }
+                            } else {
+                                val bmp = DocumentProcessor.prepareForOcr(path, 3000, rot)
+                                try { TessEngine.recognize(applicationContext, bmp, langs) }
+                                finally { bmp.recycle() }
+                            }
+                            runOnUiThread { result.success(text) }
+                        } catch (e: IllegalStateException) {
+                            runOnUiThread { result.error("OCR_INIT", e.message, null) }   // e.g. traineddata missing
+                        } catch (t: Throwable) {
+                            runOnUiThread { result.error("OCR_ERROR", t.message, null) }
+                        }
+                    }
+                    return@setMethodCallHandler
+                }
+                worker.execute {
+                    try {
+                        val out: Any? = when (call.method) {
+                            "detectFrame" -> DocumentProcessor.detectFrame(
+                                call.argument<ByteArray>("bytes")!!,
+                                call.argument<Int>("width")!!, call.argument<Int>("height")!!,
+                                call.argument<Int>("rowStride")!!, call.argument<Int>("rotation")!!)
+                            "detectCorners" -> DocumentProcessor.detectCorners(call.argument<String>("path")!!)
+                            "warp" -> {
+                                val c = call.argument<List<Double>>("corners")!!.toDoubleArray()
+                                DocumentProcessor.warp(call.argument<String>("path")!!, c, call.argument<String>("out")!!)
+                                true
+                            }
+                            "applyFilter" -> {
+                                DocumentProcessor.applyFilter(
+                                    call.argument<String>("path")!!, call.argument<String>("mode")!!,
+                                    call.argument<String>("out")!!, call.argument<Int>("maxSide") ?: 0)
+                                true
+                            }
+                            "composeId" -> {
+                                DocumentProcessor.composeId(
+                                    call.argument<String>("front")!!, call.argument<String>("back")!!, call.argument<String>("out")!!)
+                                true
+                            }
+                            "shrink" -> {
+                                DocumentProcessor.shrink(
+                                    call.argument<String>("path")!!, call.argument<Int>("maxSide")!!,
+                                    call.argument<Int>("quality")!!, call.argument<String>("out")!!)
+                                true
+                            }
+                            "applyMarks" -> {
+                                DocumentProcessor.applyMarks(
+                                    call.argument<String>("path")!!,
+                                    call.argument<List<Double>>("marks")!!.toDoubleArray(),
+                                    call.argument<String>("out")!!)
+                                true
+                            }
+                            "rotate" -> {
+                                DocumentProcessor.rotate(call.argument<String>("path")!!, call.argument<String>("out")!!)
+                                true
+                            }
+                            else -> { runOnUiThread { result.notImplemented() }; return@execute }
+                        }
+                        runOnUiThread { result.success(out) }
+                    } catch (t: Throwable) {
+                        runOnUiThread { result.error("CV_ERROR", t.message, null) }
+                    }
+                }
+            }
+    }
+
+    override fun onDestroy() { worker.shutdown(); ocrWorker.shutdown(); super.onDestroy() }
+}

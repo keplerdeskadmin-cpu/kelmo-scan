@@ -1,0 +1,27 @@
+name: kelmo_scan
+description: High-performance document scanner (OpenCV native + ML Kit OCR).
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  provider: ^6.1.2               # theme state management
+  camera: ^0.11.0+2              # CameraX-backed live preview + image stream
+  image_picker: ^1.1.2           # import from gallery
+  path_provider: ^2.1.4
+  path: ^1.9.0
+  pdf: ^3.11.1                   # PDF export
+  share_plus: ^10.0.2
+  shared_preferences: ^2.3.2     # persist chosen theme
+  permission_handler: ^11.3.1
+  sqflite: ^2.4.4+2
+  archive: ^4.5.2
+  file_picker: ^8.3.7
+  crypto: ^3.0.7
+
+flutter:
+  uses-material-design: true
