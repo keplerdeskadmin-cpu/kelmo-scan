@@ -28,9 +28,10 @@ import '../widgets/theme_picker_sheet.dart';
 import 'camera_screen.dart';
 import 'document_screen.dart';
 import 'settings_screen.dart';
+import 'share_screen.dart';
 import 'trash_screen.dart';
 
-const _appVersion = '1.1';
+const _appVersion = '1.2';
 const _apkLink = 'https://github.com/keplerdeskadmin-cpu/kelmo-scan/releases/latest/download/KelmoScan-arm64.apk';
 
 /// "Oct-21, 15:47" — the date style used in the document list.
@@ -156,7 +157,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
     switch (v) {
       case 'share':
         final pages = await _repo.pages(d.id);
-        await PdfExporter.exportAndShare(d.title, [for (final p in pages) p.imagePath], _settings.pdfSize);
+        if (mounted) await ShareScreen.open(context, d.title, pages);
       case 'ocr':
         final pages = await _repo.pages(d.id);
         if (mounted) OcrSheet.show(context, [for (final p in pages) p.imagePath]);
@@ -549,7 +550,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
                 color: Colors.white,
                 onSelected: (v) => _docMenu(v, d),
                 itemBuilder: (_) => [
-                  _mi('share', Icons.share, 'Share PDF'),
+                  _mi('share', Icons.share, 'Share'),
                   _mi('ocr', Icons.text_fields, 'Extract text (OCR)'),
                   _mi('rename', Icons.edit, 'Rename'),
                   _mi('move', Icons.drive_file_move_outline, 'Move to folder'),

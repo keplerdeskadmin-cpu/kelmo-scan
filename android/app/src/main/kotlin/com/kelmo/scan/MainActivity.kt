@@ -15,8 +15,21 @@
 
 package com.kelmo.scan
 
+import android.content.ContentValues
 import android.graphics.Bitmap
+import android.os.Build
+import android.os.Bundle
+import android.os.CancellationSignal
+import android.os.Environment
+import android.os.ParcelFileDescriptor
+import android.print.PageRange
+import android.print.PrintAttributes
+import android.print.PrintDocumentAdapter
+import android.print.PrintDocumentInfo
+import android.print.PrintManager
+import android.provider.MediaStore
 import android.view.WindowManager
+import androidx.annotation.RequiresApi
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -24,7 +37,34 @@ import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import org.opencv.android.OpenCVLoader
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.util.concurrent.Executors
+
+/** Hands an existing PDF file to the Android print system. */
+private class PdfPrintAdapter(private val file: File, private val name: String) : PrintDocumentAdapter() {
+    override fun onLayout(
+        oldAttributes: PrintAttributes?, newAttributes: PrintAttributes,
+        cancellationSignal: CancellationSignal?, callback: LayoutResultCallback, extras: Bundle?
+    ) {
+        if (cancellationSignal?.isCanceled == true) { callback.onLayoutCancelled(); return }
+        val info = PrintDocumentInfo.Builder(name).setContentType(PrintDocumentInfo.CONTENT_TYPE_DOCUMENT).build()
+        callback.onLayoutFinished(info, true)
+    }
+
+    override fun onWrite(
+        pages: Array<out PageRange>, destination: ParcelFileDescriptor,
+        cancellationSignal: CancellationSignal?, callback: WriteResultCallback
+    ) {
+        try {
+            FileInputStream(file).use { input -> FileOutputStream(destination.fileDescriptor).use { input.copyTo(it) } }
+            callback.onWriteFinished(arrayOf(PageRange.ALL_PAGES))
+        } catch (e: Exception) {
+            callback.onWriteFailed(e.message)
+        }
+    }
+}
 
 class MainActivity : FlutterFragmentActivity() {   // BiometricPrompt needs a FragmentActivity
     // Single worker thread: serialises CV work, keeps UI + platform thread free.
@@ -58,6 +98,17 @@ class MainActivity : FlutterFragmentActivity() {   // BiometricPrompt needs a Fr
                         .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.BIOMETRIC_WEAK)
                         .build()
                     prompt.authenticate(info)
+                    return@setMethodCallHandler
+                }
+                if (call.method == "printPdf") {
+                    try {
+                        val name = call.argument<String>("name") ?: "Kelmo Scan"
+                        val pm = getSystemService(PRINT_SERVICE) as PrintManager
+                        pm.print(name, PdfPrintAdapter(File(call.argument<String>("path")!!), name), null)
+                        result.success(true)
+                    } catch (t: Throwable) {
+                        result.error("PRINT_ERROR", t.message, null)
+                    }
                     return@setMethodCallHandler
                 }
                 if (call.method == "secureScreen") {
@@ -149,6 +200,15 @@ class MainActivity : FlutterFragmentActivity() {   // BiometricPrompt needs a Fr
                                     call.argument<String>("out")!!)
                                 true
                             }
+                            "saveToGallery", "saveToDownloads" -> {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                    saveMedia(
+                                        call.argument<String>("path")!!, call.argument<String>("name")!!,
+                                        call.argument<String>("mime") ?: "image/jpeg", call.method == "saveToGallery")
+                                } else {
+                                    throw IllegalStateException("Saving needs Android 10 or newer")
+                                }
+                            }
                             "rotate" -> {
                                 DocumentProcessor.rotate(call.argument<String>("path")!!, call.argument<String>("out")!!)
                                 true
@@ -161,6 +221,25 @@ class MainActivity : FlutterFragmentActivity() {   // BiometricPrompt needs a Fr
                     }
                 }
             }
+    }
+
+    /** Copies a file into Pictures/Kelmo Scan (gallery) or Download/Kelmo Scan. Returns the visible path. */
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun saveMedia(path: String, name: String, mime: String, gallery: Boolean): String {
+        val folder = (if (gallery) Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_DOWNLOADS) + "/Kelmo Scan"
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, mime)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, folder)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val collection = if (gallery) MediaStore.Images.Media.EXTERNAL_CONTENT_URI else MediaStore.Downloads.EXTERNAL_CONTENT_URI
+        val uri = contentResolver.insert(collection, values) ?: throw IllegalStateException("Could not create $name")
+        contentResolver.openOutputStream(uri)!!.use { out -> File(path).inputStream().use { it.copyTo(out) } }
+        values.clear()
+        values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+        contentResolver.update(uri, values, null, null)
+        return "$folder/$name"
     }
 
     override fun onDestroy() { worker.shutdown(); ocrWorker.shutdown(); super.onDestroy() }

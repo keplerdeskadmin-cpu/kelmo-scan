@@ -50,7 +50,7 @@ class DocumentRepository {
     _root = Directory(p.join((await getApplicationDocumentsDirectory()).path, 'scans'))..createSync(recursive: true);
     _db = await openDatabase(
       p.join(await getDatabasesPath(), 'kelmo_scan.db'),
-      version: 4,
+      version: 5,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onUpgrade: (db, old, _) async {
         if (old < 2) await db.execute('ALTER TABLE pages ADD COLUMN ocr_text TEXT');
@@ -60,6 +60,7 @@ class DocumentRepository {
           await _tagTables(db);
         }
         if (old < 4) await db.execute('ALTER TABLE documents ADD COLUMN trashed INTEGER');
+        if (old < 5) await db.execute('ALTER TABLE pages ADD COLUMN note TEXT');
       },
       onCreate: (db, _) async {
         await db.execute('CREATE TABLE folders(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created INTEGER NOT NULL)');
@@ -69,7 +70,7 @@ class DocumentRepository {
         await db.execute('CREATE TABLE pages(id INTEGER PRIMARY KEY AUTOINCREMENT, '
             'doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE, position INTEGER NOT NULL, '
             'image_path TEXT NOT NULL, thumb_path TEXT NOT NULL, orig_path TEXT NOT NULL, '
-            'corners TEXT NOT NULL, filter TEXT NOT NULL, bytes INTEGER NOT NULL, ocr_text TEXT)');
+            'corners TEXT NOT NULL, filter TEXT NOT NULL, bytes INTEGER NOT NULL, ocr_text TEXT, note TEXT)');
         await db.execute('CREATE INDEX idx_pages_doc ON pages(doc_id, position)');
         await _tagTables(db);
         final now = DateTime.now().millisecondsSinceEpoch;
@@ -236,6 +237,9 @@ class DocumentRepository {
     for (final x in [old.imagePath, old.thumbPath, old.origPath]) { _rm(x); }
     await _touch(old.docId, {});
   }
+
+  Future<void> setPageNote(int pageId, String? note) =>
+      _db.update('pages', {'note': (note == null || note.trim().isEmpty) ? null : note.trim()}, where: 'id = ?', whereArgs: [pageId]);
 
   /// Returns pages left; deletes the whole document when none remain.
   Future<int> deletePage(ScanPage pg) async {

@@ -35,21 +35,32 @@ enum PdfSize {
 Future<Uint8List> _buildPdf(List<Object> a) async {
   final paths = (a[0] as List).cast<String>();
   final fmt = PdfPageFormat(a[1] as double, a[2] as double);
+  final mark = a.length > 3 ? a[3] as String : '';
   final doc = pw.Document();
   for (final p in paths) {
     final img = pw.MemoryImage(File(p).readAsBytesSync());
     doc.addPage(pw.Page(
       pageFormat: fmt,
       margin: pw.EdgeInsets.zero,
-      build: (_) => pw.Center(child: pw.Image(img, fit: pw.BoxFit.contain)),
+      build: (_) => pw.Stack(alignment: pw.Alignment.center, children: [
+        pw.Center(child: pw.Image(img, fit: pw.BoxFit.contain)),
+        if (mark.isNotEmpty)
+          pw.Transform.rotate(
+            angle: 0.6,
+            child: pw.Opacity(
+              opacity: 0.22,
+              child: pw.Text(mark, style: pw.TextStyle(fontSize: 64, fontWeight: pw.FontWeight.bold, color: PdfColors.grey700)),
+            ),
+          ),
+      ]),
     ));
   }
   return doc.save();
 }
 
 class PdfExporter {
-  static Future<String> save(List<String> images, String name, {PdfSize size = PdfSize.a4}) async {
-    final bytes = await compute(_buildPdf, <Object>[images, size.format.width, size.format.height]);
+  static Future<String> save(List<String> images, String name, {PdfSize size = PdfSize.a4, String watermark = ''}) async {
+    final bytes = await compute(_buildPdf, <Object>[images, size.format.width, size.format.height, watermark]);
     final dir = await getTemporaryDirectory();
     final safe = name.replaceAll(RegExp(r'[^\w\- ]+'), '_');
     final f = File('${dir.path}/$safe.pdf');

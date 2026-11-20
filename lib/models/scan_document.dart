@@ -75,7 +75,7 @@ class ScanDocument {
 /// A page stored in the database.
 class ScanPage {
   ScanPage({required this.id, required this.docId, required this.position, required this.imagePath,
-      required this.thumbPath, required this.origPath, required this.corners, required this.filter});
+      required this.thumbPath, required this.origPath, required this.corners, required this.filter, this.note});
 
   factory ScanPage.fromRow(Map<String, Object?> r) => ScanPage(
         id: r['id'] as int,
@@ -89,11 +89,13 @@ class ScanPage {
             Offset((e[0] as num).toDouble(), (e[1] as num).toDouble())
         ],
         filter: r['filter'] as String,
+        note: r['note'] as String?,
       );
 
   final int id, docId, position;
   final String imagePath, thumbPath, origPath, filter;
   final List<Offset> corners;
+  final String? note;
 }
 
 /// Result returned by the edit screen (files are still in temp; repository copies them).
