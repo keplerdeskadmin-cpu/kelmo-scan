@@ -14,11 +14,13 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import 'dart:io';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../models/scan_document.dart';
 import '../services/image_processing_service.dart';
 import '../services/import_service.dart';
+import 'package:path_provider/path_provider.dart';
 import '../theme/app_themes.dart';
 import '../widgets/border_adjust_overlay.dart';
 
@@ -58,6 +60,34 @@ class _EditScanScreenState extends State<EditScanScreen> {
   bool _color = true;
   double _bright = 0, _contrast = 1; // Adjust: brightness -100..100, contrast 0.5..2
   bool get _adjusted => _bright != 0 || _contrast != 1;
+
+  // Eraser: white brush strokes (normalised points, width = fraction of image width)
+  bool _erasing = false;
+  final List<(List<Offset>, double)> _wipes = [];
+  double _wipeSize = 30, _flatAspect = .75;
+
+  void _readFlatAspect(String path) {
+    FileImage(File(path)).resolve(const ImageConfiguration()).addListener(ImageStreamListener((info, _) {
+      if (mounted) setState(() => _flatAspect = info.image.width / info.image.height);
+    }));
+  }
+
+  /// Paints the eraser strokes white into the image file.
+  Future<String> _bakeWipes(String path) async {
+    if (_wipes.isEmpty) return path;
+    final codec = await ui.instantiateImageCodec(await File(path).readAsBytes());
+    final img = (await codec.getNextFrame()).image;
+    final size = Size(img.width.toDouble(), img.height.toDouble());
+    final rec = ui.PictureRecorder();
+    final c = Canvas(rec);
+    c.drawImage(img, Offset.zero, Paint());
+    _WipePainter(_wipes).paint(c, size);
+    final out = await rec.endRecording().toImage(img.width, img.height);
+    final bytes = (await out.toByteData(format: ui.ImageByteFormat.png))!.buffer.asUint8List();
+    final f = File('${(await getTemporaryDirectory()).path}/wipe_${DateTime.now().microsecondsSinceEpoch}.png');
+    await f.writeAsBytes(bytes);
+    return _svc.shrink(f.path, 100000, 92);
+  }
 
   Future<String> _adj(String path) => _adjusted ? ImportService.adjust(path, _bright, _contrast) : Future.value(path);
 
@@ -138,6 +168,7 @@ class _EditScanScreenState extends State<EditScanScreen> {
     setState(() => _busy = true);
     try {
       _flat = await _svc.warp(_src, _corners);
+      _wipes.clear();
       await _render();
       if (mounted) setState(() => _border = false);
     } finally {
@@ -148,6 +179,7 @@ class _EditScanScreenState extends State<EditScanScreen> {
   // ───────── step 2: filter
   Future<void> _render() async {
     final out = await _adj(await _svc.applyFilter(_flat!, _mode, maxSide: 1800));
+    _readFlatAspect(out);
     if (mounted) setState(() => _shown = out);
   }
 
@@ -168,6 +200,7 @@ class _EditScanScreenState extends State<EditScanScreen> {
     setState(() => _busy = true);
     try {
       _flat = await _rot(_flat!, clockwise: clockwise);
+      _wipes.clear();
       await _render();
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -232,8 +265,8 @@ class _EditScanScreenState extends State<EditScanScreen> {
 
   Future<void> _finish() async {
     setState(() => _busy = true);
-    final full = await _adj(await _svc.applyFilter(_flat!, _mode)); // full resolution
-    final thumb = await _adj(await _svc.applyFilter(_flat!, _mode, maxSide: 360));
+    final full = await _bakeWipes(await _adj(await _svc.applyFilter(_flat!, _mode))); // full resolution
+    final thumb = await _bakeWipes(await _adj(await _svc.applyFilter(_flat!, _mode, maxSide: 360)));
     if (!mounted) return;
     Navigator.pop(
       context,
@@ -247,7 +280,7 @@ class _EditScanScreenState extends State<EditScanScreen> {
     final p = context.pal;
     return PopScope(
       canPop: _border,
-      onPopInvokedWithResult: (didPop, _) { if (!didPop) setState(() => _border = true); },
+      onPopInvokedWithResult: (didPop, _) { if (!didPop) setState(() { if (_erasing) { _erasing = false; } else { _border = true; } }); },
       child: Scaffold(
         backgroundColor: _border ? Colors.black : _bg,
         appBar: _border ? _borderBar(p) : _filterBar(p),
@@ -263,15 +296,36 @@ class _EditScanScreenState extends State<EditScanScreen> {
                         onChanged: (c) => setState(() => _corners = c))
                     : _shown == null
                         ? const SizedBox()
-                        : GestureDetector(
-                            onLongPressStart: (_) => setState(() => _compare = true),
-                            onLongPressEnd: (_) => setState(() => _compare = false),
-                            child: InteractiveViewer(
-                              maxScale: 5,
-                              child: Image.file(File(_compare && _flat != null ? _flat! : _shown!),
-                                  key: ValueKey(_compare ? 'o$_flat' : _shown), gaplessPlayback: true),
-                            ),
-                          ),
+                        : _erasing
+                            ? AspectRatio(
+                                aspectRatio: _flatAspect,
+                                child: LayoutBuilder(builder: (_, box) {
+                                  Offset n(Offset o) => Offset(o.dx / box.maxWidth, o.dy / box.maxHeight);
+                                  return GestureDetector(
+                                    onPanStart: (d) => setState(() => _wipes.add(([n(d.localPosition)], _wipeSize / 1000))),
+                                    onPanUpdate: (d) => setState(() => _wipes.last.$1.add(n(d.localPosition))),
+                                    child: Stack(fit: StackFit.expand, children: [
+                                      Image.file(File(_shown!), key: ValueKey(_shown), fit: BoxFit.fill, gaplessPlayback: true),
+                                      CustomPaint(painter: _WipePainter(_wipes, rev: _wipes.fold(0, (a, w) => a + w.$1.length))),
+                                    ]),
+                                  );
+                                }),
+                              )
+                            : GestureDetector(
+                                onLongPressStart: (_) => setState(() => _compare = true),
+                                onLongPressEnd: (_) => setState(() => _compare = false),
+                                child: InteractiveViewer(
+                                  maxScale: 5,
+                                  child: AspectRatio(
+                                    aspectRatio: _flatAspect,
+                                    child: Stack(fit: StackFit.expand, children: [
+                                      Image.file(File(_compare && _flat != null ? _flat! : _shown!),
+                                          key: ValueKey(_compare ? 'o$_flat' : _shown), fit: BoxFit.fill, gaplessPlayback: true),
+                                      if (!_compare) CustomPaint(painter: _WipePainter(_wipes)),
+                                    ]),
+                                  ),
+                                ),
+                              ),
               ),
             ),
           ),
@@ -357,7 +411,21 @@ class _EditScanScreenState extends State<EditScanScreen> {
           height: 60,
           child: Row(children: [
             const SizedBox(width: 6),
-            if (_border) ...[
+            if (!_border && _erasing) ...[
+              b(Icons.undo, 'Undo', _wipes.isEmpty ? null : () => setState(() => _wipes.removeLast())),
+              const SizedBox(width: 4),
+              const Icon(Icons.cleaning_services_outlined, color: Colors.white70, size: 20),
+              Expanded(
+                child: Slider(
+                  value: _wipeSize, min: 8, max: 120, activeColor: Colors.white, inactiveColor: Colors.white30,
+                  onChanged: (v) => setState(() => _wipeSize = v),
+                ),
+              ),
+              TextButton(
+                onPressed: () => setState(() => _erasing = false),
+                child: const Text('DONE', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+              ),
+            ] else if (_border) ...[
               b(Icons.fullscreen_exit, 'Auto detect', () {
                 if (_detected != null) { setState(() => _corners = _detected!); } else { _detect(); }
               }),
@@ -370,7 +438,10 @@ class _EditScanScreenState extends State<EditScanScreen> {
               b(Icons.crop, 'Border', () => setState(() => _border = true)),
               b(Icons.rotate_left, 'Rotate left', () => _rotateFlat(false)),
               b(Icons.rotate_right, 'Rotate right', () => _rotateFlat(true)),
-              b(Icons.cleaning_services_outlined, 'Eraser', () => _snack('Eraser is coming in the next update')),
+              b(Icons.cleaning_services_outlined, 'Eraser', _shown == null ? null : () {
+                setState(() => _erasing = true);
+                _snack('Rub over marks or stains to wipe them white');
+              }),
               b(Icons.tune, 'Adjust', _adjust),
               const Spacer(),
               b(Icons.check, 'Done', _flat == null ? null : _finish),
@@ -381,4 +452,31 @@ class _EditScanScreenState extends State<EditScanScreen> {
       ),
     );
   }
+}
+
+/// White eraser strokes (normalised points).
+class _WipePainter extends CustomPainter {
+  _WipePainter(this.wipes, {this.rev = 0});
+  final List<(List<Offset>, double)> wipes;
+  final int rev;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    for (final (pts, w) in wipes) {
+      if (pts.isEmpty) continue;
+      paint.strokeWidth = w * size.width;
+      final path = Path()..moveTo(pts.first.dx * size.width, pts.first.dy * size.height);
+      for (final p in pts.skip(1)) { path.lineTo(p.dx * size.width, p.dy * size.height); }
+      if (pts.length == 1) path.lineTo(pts.first.dx * size.width + .1, pts.first.dy * size.height);
+      canvas.drawPath(path, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_WipePainter old) => true;
 }

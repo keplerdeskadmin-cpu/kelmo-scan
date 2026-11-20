@@ -31,11 +31,21 @@ import '../widgets/stamp_maker.dart';
 abstract class _Item {}
 
 class _Stroke extends _Item {
-  _Stroke(this.color, this.width, this.opacity);
+  _Stroke(this.color, this.width, this.opacity, {this.mode = 0});
   final List<Offset> pts = []; // normalised 0..1
   final Color color;
   final double width; // fraction of image width
   final double opacity;
+  final int mode; // 0 pen, 1 highlighter, 2 blur
+}
+
+/// Line / arrow / box / circle.
+class _Shape extends _Item {
+  _Shape(this.kind, this.a, this.b, this.color, this.width);
+  final String kind; // line | arrow | rect | circle
+  Offset a, b; // normalised
+  final Color color;
+  final double width;
 }
 
 class _Stamp extends _Item {
@@ -43,14 +53,46 @@ class _Stamp extends _Item {
   final ui.Image img;
   Offset center; // normalised
   double widthFrac; // stamp width / image width
+  double rotation = 0; // radians (two-finger turn)
 }
 
 class _MarkPainter extends CustomPainter {
-  _MarkPainter(this.items, this.imageAspect, {this.selected, this.rev = 0});
+  _MarkPainter(this.items, this.imageAspect, {this.selected, this.rev = 0, this.base});
   final List<_Item> items;
   final double imageAspect; // image width / height
   final _Stamp? selected;
   final int rev;
+  final ui.Image? base; // page image, needed for the blur brush
+
+  Path _strokePath(_Stroke it, Size size) {
+    final path = Path()..moveTo(it.pts.first.dx * size.width, it.pts.first.dy * size.height);
+    for (final p in it.pts.skip(1)) { path.lineTo(p.dx * size.width, p.dy * size.height); }
+    if (it.pts.length == 1) path.lineTo(it.pts.first.dx * size.width + .1, it.pts.first.dy * size.height);
+    return path;
+  }
+
+  void _shape(Canvas canvas, _Shape s, Size size) {
+    final a = Offset(s.a.dx * size.width, s.a.dy * size.height), b = Offset(s.b.dx * size.width, s.b.dy * size.height);
+    final paint = Paint()
+      ..color = s.color
+      ..strokeWidth = s.width * size.width
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke;
+    switch (s.kind) {
+      case 'rect': canvas.drawRect(Rect.fromPoints(a, b), paint);
+      case 'circle': canvas.drawOval(Rect.fromPoints(a, b), paint);
+      default:
+        canvas.drawLine(a, b, paint);
+        if (s.kind == 'arrow' && (b - a).distance > 2) {
+          final ang = math.atan2(b.dy - a.dy, b.dx - a.dx);
+          final len = math.max(paint.strokeWidth * 4, size.width * .03);
+          for (final d in [2.6, -2.6]) {
+            canvas.drawLine(b, b + Offset(math.cos(ang + d) * len, math.sin(ang + d) * len), paint);
+          }
+        }
+    }
+  }
 
   static Rect stampRect(_Stamp s, Size size) {
     final w = s.widthFrac * size.width;
@@ -63,26 +105,53 @@ class _MarkPainter extends CustomPainter {
     for (final it in items) {
       if (it is _Stroke) {
         if (it.pts.isEmpty) continue;
+        final path = _strokePath(it, size);
         final paint = Paint()
-          ..color = it.color.withAlpha((it.opacity * 255).round())
           ..strokeWidth = it.width * size.width
           ..strokeCap = StrokeCap.round
           ..strokeJoin = StrokeJoin.round
           ..style = PaintingStyle.stroke;
-        final path = Path()..moveTo(it.pts.first.dx * size.width, it.pts.first.dy * size.height);
-        for (final p in it.pts.skip(1)) { path.lineTo(p.dx * size.width, p.dy * size.height); }
-        if (it.pts.length == 1) path.lineTo(it.pts.first.dx * size.width + .1, it.pts.first.dy * size.height);
-        canvas.drawPath(path, paint);
+        if (it.mode == 2) {
+          // blur brush: blurred page image, only inside the stroke
+          final all = Offset.zero & size;
+          canvas.saveLayer(all, Paint());
+          canvas.drawPath(path, paint..color = Colors.black);
+          final sigma = size.width * .012;
+          canvas.saveLayer(all, Paint()
+            ..blendMode = BlendMode.srcIn
+            ..imageFilter = ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma, tileMode: TileMode.clamp));
+          if (base != null) {
+            canvas.drawImageRect(base!, Rect.fromLTWH(0, 0, base!.width.toDouble(), base!.height.toDouble()), all, Paint());
+          } else {
+            canvas.drawRect(all, Paint()..color = Colors.grey);
+          }
+          canvas.restore();
+          canvas.restore();
+        } else if (it.mode == 1) {
+          canvas.drawPath(path, paint
+            ..color = it.color.withAlpha(110)
+            ..strokeCap = StrokeCap.square
+            ..blendMode = BlendMode.multiply);
+        } else {
+          canvas.drawPath(path, paint..color = it.color.withAlpha((it.opacity * 255).round()));
+        }
+      } else if (it is _Shape) {
+        _shape(canvas, it, size);
       } else if (it is _Stamp) {
         final r = stampRect(it, size);
-        canvas.drawImageRect(it.img, Rect.fromLTWH(0, 0, it.img.width.toDouble(), it.img.height.toDouble()), r,
+        canvas.save();
+        canvas.translate(r.center.dx, r.center.dy);
+        canvas.rotate(it.rotation);
+        final local = Rect.fromCenter(center: Offset.zero, width: r.width, height: r.height);
+        canvas.drawImageRect(it.img, Rect.fromLTWH(0, 0, it.img.width.toDouble(), it.img.height.toDouble()), local,
             Paint()..filterQuality = FilterQuality.high);
         if (identical(it, selected)) {
-          canvas.drawRect(r.inflate(4), Paint()
+          canvas.drawRect(local.inflate(4), Paint()
             ..color = const Color(0xFF2E9CF0)
             ..style = PaintingStyle.stroke
             ..strokeWidth = 2);
         }
+        canvas.restore();
       }
     }
   }
@@ -182,8 +251,10 @@ class MarkupScreen extends StatefulWidget {
 }
 
 class _MarkupScreenState extends State<MarkupScreen> {
-  static const _colors = [Colors.white, Color(0xFF6B5B00), Color(0xFF7A0000), Color(0xFFD50000), Color(0xFFFF5722),
-    Colors.black, Color(0xFF0D47A1), Color(0xFF2E7D32)];
+  static const _colors = [Colors.black, Color(0xFFD50000), Color(0xFF0D47A1), Color(0xFF2E7D32), Colors.white,
+    Color(0xFFFFEB3B), Color(0xFFFF9800), Color(0xFFFF5722), Color(0xFFE91E63), Color(0xFF9C27B0), Color(0xFF673AB7),
+    Color(0xFF2196F3), Color(0xFF00BCD4), Color(0xFF009688), Color(0xFF8BC34A), Color(0xFFCDDC39), Color(0xFF795548),
+    Color(0xFF9E9E9E), Color(0xFF6B5B00), Color(0xFF7A0000)];
   final List<_Item> _items = [], _redo = [];
   List<File> _sigs = [];
   double _aspect = .75;
@@ -192,10 +263,34 @@ class _MarkupScreenState extends State<MarkupScreen> {
   double _size = 21, _opacity = 100;
   _Stamp? _sel;
   _Stroke? _cur;
-  // gesture state for moving / scaling a stamp
+  _Shape? _curShape;
+  String _tool = 'pen'; // pen | highlight | blur | eraser | line | arrow | rect | circle
+  ui.Image? _base; // display copy of the page, for the blur brush
+  // gesture state for moving / scaling / turning a stamp
   Offset? _startFocal, _startCenter;
-  double _startW = 0;
+  double _startW = 0, _startRot = 0;
   int _rev = 0;
+
+  Future<void> _loadBase() async {
+    final codec = await ui.instantiateImageCodec(await File(widget.imagePath).readAsBytes(), targetWidth: 1400);
+    final img = (await codec.getNextFrame()).image;
+    if (mounted) setState(() => _base = img);
+  }
+
+  /// Eraser: removes the drawing / shape / stamp under the finger.
+  void _eraseAt(Offset n, Size box) {
+    final r = 18 / box.width;
+    _Item? hit;
+    for (final it in _items.reversed) {
+      if (it is _Stroke && it.pts.any((p) => (p - n).distance < r + it.width / 2)) { hit = it; break; }
+      if (it is _Shape) {
+        final rect = Rect.fromPoints(it.a, it.b).inflate(r);
+        if (rect.contains(n)) { hit = it; break; }
+      }
+      if (it is _Stamp && _MarkPainter.stampRect(it, box).contains(Offset(n.dx * box.width, n.dy * box.height))) { hit = it; break; }
+    }
+    if (hit != null) setState(() { _items.remove(hit); _redo.add(hit!); if (identical(hit, _sel)) _sel = null; });
+  }
 
   @override
   void initState() {
@@ -204,6 +299,7 @@ class _MarkupScreenState extends State<MarkupScreen> {
       ImageStreamListener((info, _) { if (mounted) setState(() => _aspect = info.image.width / info.image.height); }),
     );
     _loadSigs();
+    _loadBase();
     if (widget.openStamp) WidgetsBinding.instance.addPostFrameCallback((_) => _stamp());
   }
 
@@ -292,7 +388,7 @@ class _MarkupScreenState extends State<MarkupScreen> {
       final rec = ui.PictureRecorder();
       final canvas = Canvas(rec);
       canvas.drawImage(base, Offset.zero, Paint());
-      _MarkPainter(_items, _aspect).paint(canvas, size);
+      _MarkPainter(_items, _aspect, base: base).paint(canvas, size);
       final img = await rec.endRecording().toImage(base.width, base.height);
       final tmp = await getTemporaryDirectory();
       final png = File('${tmp.path}/markup_${DateTime.now().microsecondsSinceEpoch}.png');
@@ -335,29 +431,48 @@ class _MarkupScreenState extends State<MarkupScreen> {
                   onScaleStart: (d) {
                     final n = norm(d.localFocalPoint);
                     if (_pen) {
-                      _cur = _Stroke(_color, _size / 1000, _opacity / 100)..pts.add(n);
-                      setState(() => _push(_cur!));
+                      switch (_tool) {
+                        case 'eraser':
+                          _eraseAt(n, size);
+                        case 'line' || 'arrow' || 'rect' || 'circle':
+                          _curShape = _Shape(_tool, n, n, _color, _size / 1500);
+                          setState(() => _push(_curShape!));
+                        default:
+                          final mode = _tool == 'highlight' ? 1 : _tool == 'blur' ? 2 : 0;
+                          final w = mode == 0 ? _size / 1000 : _size * 2.2 / 1000;
+                          _cur = _Stroke(mode == 1 ? (_color == Colors.white ? Colors.yellow : _color) : _color, w, _opacity / 100, mode: mode)
+                            ..pts.add(n);
+                          setState(() => _push(_cur!));
+                      }
                     } else {
                       final s = _hit(n, size) ?? _sel;
                       setState(() => _sel = s);
-                      if (s != null) { _startFocal = n; _startCenter = s.center; _startW = s.widthFrac; }
+                      if (s != null) { _startFocal = n; _startCenter = s.center; _startW = s.widthFrac; _startRot = s.rotation; }
                     }
                   },
                   onScaleUpdate: (d) {
                     final n = norm(d.localFocalPoint);
                     if (_pen) {
-                      if (_cur != null && d.pointerCount == 1) setState(() { _cur!.pts.add(n); _rev++; });
+                      if (d.pointerCount != 1) return;
+                      if (_tool == 'eraser') {
+                        _eraseAt(n, size);
+                      } else if (_curShape != null) {
+                        setState(() { _curShape!.b = n; _rev++; });
+                      } else if (_cur != null) {
+                        setState(() { _cur!.pts.add(n); _rev++; });
+                      }
                     } else if (_sel != null && _startFocal != null) {
                       setState(() {
                         _sel!.center = _startCenter! + (n - _startFocal!);
                         _sel!.widthFrac = (_startW * d.scale).clamp(.05, 1.5).toDouble();
+                        if (d.pointerCount > 1) _sel!.rotation = _startRot + d.rotation;
                       });
                     }
                   },
-                  onScaleEnd: (_) { _cur = null; _startFocal = null; },
+                  onScaleEnd: (_) { _cur = null; _curShape = null; _startFocal = null; },
                   child: Stack(children: [
                     Positioned.fill(child: Image.file(File(widget.imagePath), fit: BoxFit.fill, cacheWidth: 1600)),
-                    Positioned.fill(child: CustomPaint(painter: _MarkPainter(_items, _aspect, selected: _sel, rev: _rev))),
+                    Positioned.fill(child: CustomPaint(painter: _MarkPainter(_items, _aspect, selected: _sel, rev: _rev, base: _base))),
                   ]),
                 );
               }),
@@ -405,60 +520,97 @@ class _MarkupScreenState extends State<MarkupScreen> {
           ),
           Container(width: 1, height: 90, color: Colors.white30),
           Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-            IconButton(icon: const Icon(Icons.brush, color: Colors.white), tooltip: 'Pen', onPressed: () => setState(() { _pen = true; _sel = null; })),
+            IconButton(icon: const Icon(Icons.brush, color: Colors.white), tooltip: 'Draw / Highlight / Blur / Shapes',
+                onPressed: () => setState(() { _pen = true; _sel = null; })),
             IconButton(icon: const Icon(Icons.add, color: Colors.white, size: 30), tooltip: 'Add', onPressed: _plus),
           ]),
           const SizedBox(width: 6),
         ]),
       );
 
-  Widget _penPanel() => Padding(
-        padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
-        child: Row(children: [
-          Expanded(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Row(children: [
-                const Text('Size', style: TextStyle(color: Colors.white)),
-                Expanded(
-                  child: Slider(value: _size, min: 2, max: 60, activeColor: const Color(0xFF26A69A),
-                      onChanged: (v) => setState(() => _size = v)),
+  Widget _penPanel() {
+    const tools = [
+      ('pen', Icons.edit, 'Pen'),
+      ('highlight', Icons.border_color, 'Highlight'),
+      ('blur', Icons.blur_on, 'Blur'),
+      ('eraser', Icons.auto_fix_normal, 'Eraser'),
+      ('line', Icons.horizontal_rule, 'Line'),
+      ('arrow', Icons.north_east, 'Arrow'),
+      ('rect', Icons.crop_square, 'Box'),
+      ('circle', Icons.circle_outlined, 'Circle'),
+    ];
+    final colorTool = _tool != 'blur' && _tool != 'eraser';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 4),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        SizedBox(
+          height: 58,
+          child: ListView(scrollDirection: Axis.horizontal, children: [
+            for (final t in tools)
+              GestureDetector(
+                onTap: () => setState(() => _tool = t.$1),
+                child: Container(
+                  width: 62, margin: const EdgeInsets.only(right: 4),
+                  decoration: BoxDecoration(
+                    color: _tool == t.$1 ? Colors.white.withAlpha(45) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    Icon(t.$2, color: Colors.white, size: 24),
+                    const SizedBox(height: 2),
+                    Text(t.$3, style: const TextStyle(color: Colors.white, fontSize: 11)),
+                  ]),
                 ),
-                SizedBox(width: 26, child: Text('${_size.round()}', style: const TextStyle(color: Colors.white))),
-              ]),
-              SizedBox(
-                height: 40,
-                child: ListView(scrollDirection: Axis.horizontal, children: [
-                  for (final c in _colors)
-                    GestureDetector(
-                      onTap: () => setState(() => _color = c),
-                      child: Container(
-                        width: 34, height: 34, margin: const EdgeInsets.only(right: 8),
-                        decoration: BoxDecoration(
-                          color: c, shape: BoxShape.circle,
-                          border: Border.all(color: _color == c ? Colors.white : Colors.white24, width: _color == c ? 3 : 1),
-                        ),
-                      ),
-                    ),
-                ]),
               ),
-              Row(children: [
-                const Icon(Icons.opacity, color: Colors.white, size: 20),
-                Expanded(
-                  child: Slider(value: _opacity, min: 10, max: 100, activeColor: const Color(0xFF26A69A),
-                      onChanged: (v) => setState(() => _opacity = v)),
+          ]),
+        ),
+        if (_tool != 'eraser')
+          Row(children: [
+            const SizedBox(width: 8),
+            const Text('Size', style: TextStyle(color: Colors.white)),
+            Expanded(
+              child: Slider(value: _size, min: 2, max: 60, activeColor: const Color(0xFF26A69A),
+                  onChanged: (v) => setState(() => _size = v)),
+            ),
+            SizedBox(width: 26, child: Text('${_size.round()}', style: const TextStyle(color: Colors.white))),
+          ])
+        else
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 14),
+            child: Text('Rub over a drawing, shape or stamp to remove it', style: TextStyle(color: Colors.white70)),
+          ),
+        if (colorTool)
+          SizedBox(
+            height: 40,
+            child: ListView(scrollDirection: Axis.horizontal, children: [
+              for (final c in _colors)
+                GestureDetector(
+                  onTap: () => setState(() => _color = c),
+                  child: Container(
+                    width: 34, height: 34, margin: const EdgeInsets.only(right: 8),
+                    decoration: BoxDecoration(
+                      color: c, shape: BoxShape.circle,
+                      border: Border.all(color: _color == c ? Colors.white : Colors.white24, width: _color == c ? 3 : 1),
+                    ),
+                  ),
                 ),
-                SizedBox(width: 30, child: Text('${_opacity.round()}', style: const TextStyle(color: Colors.white))),
-              ]),
             ]),
           ),
-          Container(width: 1, height: 110, color: Colors.white30, margin: const EdgeInsets.symmetric(horizontal: 6)),
-          Column(mainAxisSize: MainAxisSize.min, children: [
-            const Icon(Icons.cleaning_services_outlined, color: Colors.white54),
-            const SizedBox(height: 10),
-            TextButton(onPressed: () => setState(() => _pen = false), child: const Text('DONE', style: TextStyle(color: Colors.white, fontSize: 16))),
-          ]),
+        Row(children: [
+          if (_tool == 'pen') ...[
+            const SizedBox(width: 8),
+            const Icon(Icons.opacity, color: Colors.white, size: 20),
+            Expanded(
+              child: Slider(value: _opacity, min: 10, max: 100, activeColor: const Color(0xFF26A69A),
+                  onChanged: (v) => setState(() => _opacity = v)),
+            ),
+          ] else
+            const Spacer(),
+          TextButton(onPressed: () => setState(() => _pen = false), child: const Text('DONE', style: TextStyle(color: Colors.white, fontSize: 16))),
         ]),
-      );
+      ]),
+    );
+  }
 }
 
 // ───────────────────────── signature pad

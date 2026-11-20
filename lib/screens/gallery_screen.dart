@@ -39,7 +39,7 @@ import 'settings_screen.dart';
 import 'share_screen.dart';
 import 'trash_screen.dart';
 
-const _appVersion = '1.6';
+const _appVersion = '1.6.1';
 const _apkLink = 'https://github.com/keplerdeskadmin-cpu/kelmo-scan/releases/latest/download/KelmoScan-arm64.apk';
 
 /// "Oct-21, 15:47" — the date style used in the document list.
@@ -523,7 +523,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
       child: Column(children: [
         Container(
           width: double.infinity,
-          color: const Color(0xFF1E3837),
+          color: p.appBar,
           padding: EdgeInsets.fromLTRB(16, MediaQuery.of(context).padding.top + 18, 16, 14),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             const Text('Kelmo Scan',
@@ -573,6 +573,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
           child: Container(
             padding: pad,
             decoration: BoxDecoration(
+              color: Colors.white,
               borderRadius: BorderRadius.circular(16),
               border: Border.all(color: const Color(0xFFE3E9E9)),
               boxShadow: const [BoxShadow(color: Color(0x0F000000), blurRadius: 10, offset: Offset(0, 3))],
