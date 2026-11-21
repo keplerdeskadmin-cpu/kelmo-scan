@@ -1,7 +1,7 @@
 name: kelmo_scan
 description: High-performance document scanner (OpenCV native + ML Kit OCR).
 publish_to: 'none'
-version: 1.7.2+15
+version: 1.7.3+16
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
