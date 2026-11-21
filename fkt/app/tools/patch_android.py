@@ -38,5 +38,21 @@ t = t.replace('    buildTypes {', sign, 1)
 t = t.replace('signingConfig = signingConfigs.getByName("debug")',
               'signingConfig = signingConfigs.findByName("kelmo") ?: signingConfigs.getByName("debug")', 1)
 g.write_text(t)
+root_g = root / 'android/build.gradle.kts'
+rg = root_g.read_text()
+rg += '''
+
+// file_picker 8.x compiles against android-34; the lifecycle plugin needs 36 (same fix as Kelmo Scan)
+subprojects {
+    if (name == "file_picker") {
+        val fix = Action<Project> {
+            (extensions.findByName("android") as? com.android.build.gradle.BaseExtension)
+                ?.compileSdkVersion(36)
+        }
+        if (state.executed) fix.execute(this) else afterEvaluate(fix)
+    }
+}
+'''
+root_g.write_text(rg)
 print('patched android project')
 print(man.read_text())
