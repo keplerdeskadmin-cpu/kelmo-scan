@@ -2,6 +2,9 @@ name: Build Kelmo Scan APK
 
 on:
   push:
+    paths-ignore:
+      - 'fkt/**'
+      - '.github/workflows/fkt-apk.yml'
   workflow_dispatch:
 
 permissions:

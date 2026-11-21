@@ -1,0 +1,24 @@
+name: fkt_messenger
+description: FKT Messenger — staff chat for Fly Kawn Travel.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  provider: ^6.1.2
+  http: ^1.2.2
+  web_socket_channel: ^3.0.1
+  shared_preferences: ^2.3.2
+  image_picker: ^1.1.2
+  file_picker: ^8.3.7
+  path_provider: ^2.1.4
+  record: ^6.0.0
+  audioplayers: ^6.1.0
+  open_filex: ^4.6.0
+
+flutter:
+  uses-material-design: true

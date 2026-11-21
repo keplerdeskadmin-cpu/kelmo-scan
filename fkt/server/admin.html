@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FKT Messenger — Admin</title>
+<style>
+:root{--navy:#0F1E3D;--gold:#E9B949;--green:#1FA855;--line:#E2E7F0;--muted:#5B6478}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:#F3F5F9;color:#14213D}
+header{background:var(--navy);color:#fff;padding:16px 20px;display:flex;align-items:center;gap:12px}
+header b{font-size:20px}header span{color:#C8D1E6;font-size:13px}
+main{max-width:980px;margin:0 auto;padding:16px;display:grid;gap:16px}
+section{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px}
+h2{margin:0 0 12px;font-size:17px}
+label{display:block;font-size:13px;color:var(--muted);margin:8px 0 4px}
+input,select,textarea{width:100%;padding:10px 12px;border:1px solid #CBD3E1;border-radius:10px;font:inherit}
+button{min-height:42px;padding:0 16px;border-radius:10px;border:0;background:var(--navy);color:#fff;font-weight:600;font:inherit;cursor:pointer}
+button.ghost{background:#E6EAF4;color:var(--navy)}button.warn{background:#FDE7E7;color:#B42318}
+table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:end}.row>*{flex:1;min-width:160px}
+.code{font-size:22px;font-weight:800;letter-spacing:3px;color:var(--navy)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:5px;background:#B8C0CF;margin-right:6px}.on{background:var(--green)}
+.note{font-size:13px;color:var(--muted)}
+#login{max-width:420px;margin:60px auto}
+</style>
+</head>
+<body>
+<header><b>FKT Messenger</b><span>Admin panel</span></header>
+<div id="login"><section>
+<h2>Admin key</h2>
+<p class="note">The key is printed in the terminal when the server starts (<code>admin key: ...</code>).</p>
+<label for="key">Key</label><input id="key" autocomplete="off">
+<p><button onclick="setKey()">Open</button></p>
+</section></div>
+<main id="app" hidden>
+<section>
+<h2>Login codes</h2>
+<p class="note">When SMS is not set up, the 6-digit code a staff member asked for appears here — tell it to them.</p>
+<table><thead><tr><th>Name</th><th>Phone</th><th>Code</th><th>Time</th><th>SMS</th></tr></thead><tbody id="otps"></tbody></table>
+</section>
+<section>
+<h2>Staff</h2>
+<div class="row">
+<div><label for="nName">Name</label><input id="nName" placeholder="e.g. Sahil"></div>
+<div><label for="nPhone">Phone</label><input id="nPhone" placeholder="03xx xxxxxxx"></div>
+<div><label for="nRole">Role</label><select id="nRole"><option value="staff">Staff</option><option value="admin">Admin</option></select></div>
+<div style="flex:0"><button onclick="addUser()">Add</button></div>
+</div>
+<table style="margin-top:12px"><thead><tr><th>Name</th><th>Phone</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody id="users"></tbody></table>
+</section>
+<section>
+<h2>SMS & company</h2>
+<div class="row">
+<div><label for="org">Company name (in the SMS)</label><input id="org"></div>
+<div><label for="smsOn">Send codes by SMS</label><select id="smsOn"><option value="0">Off (codes in this panel)</option><option value="1">On</option></select></div>
+<div><label for="smsMethod">Method</label><select id="smsMethod"><option>GET</option><option>POST</option></select></div>
+</div>
+<label for="smsUrl">SMS company URL — use {phone} and {text}</label>
+<input id="smsUrl" placeholder="https://sms-company.example/api/send?key=YOUR_KEY&to={phone}&msg={text}">
+<label for="smsBody">POST body (only for POST) — use {phone} and {text}</label>
+<textarea id="smsBody" rows="2"></textarea>
+<div class="row" style="margin-top:10px">
+<div style="flex:0"><button onclick="saveSms()">Save</button></div>
+<div><input id="testPhone" placeholder="Test number 03xx..." aria-label="Test number"></div>
+<div style="flex:0"><button class="ghost" onclick="testSms()">Send test SMS</button></div>
+</div>
+<p class="note" id="smsMsg"></p>
+</section>
+</main>
+<script>
+let KEY = localStorage.getItem('fktKey') || '';
+const $ = (i) => document.getElementById(i);
+function setKey(){ KEY = $('key').value.trim(); localStorage.setItem('fktKey', KEY); refresh(); }
+async function api(p, body){
+  const r = await fetch(p, { method: body ? 'POST' : 'GET', headers: { 'x-admin-key': KEY, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401) { $('login').hidden = false; $('app').hidden = true; throw new Error('key'); }
+  if (!r.ok) { alert(j.error || 'Error'); throw new Error(j.error); }
+  return j;
+}
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const t = (ms) => ms ? new Date(ms).toLocaleString() : '';
+let users = [], first = true;
+async function refresh(){
+  if (!KEY) return;
+  const s = await api('/api/admin/state');
+  $('login').hidden = true; $('app').hidden = false;
+  users = s.users;
+  $('otps').innerHTML = s.otps.map((o) => `<tr><td>${esc(o.name)}</td><td>${esc(o.phone)}</td><td class="code">${esc(o.code)}</td><td>${t(o.ts)}</td><td>${o.sms ? 'sent' : '—'}</td></tr>`).join('') || '<tr><td colspan="5" class="note">No codes yet</td></tr>';
+  $('users').innerHTML = s.users.map((u) => `<tr><td><span class="dot ${u.online ? 'on' : ''}"></span>${esc(u.name)}</td><td>${esc(u.phone)}</td><td>${u.role}</td><td>${u.disabled ? 'Off' : (u.online ? 'Online' : 'Last seen ' + (u.lastSeen ? t(u.lastSeen) : '—'))}</td>
+  <td style="white-space:nowrap"><button class="ghost" onclick="editUser('${u.id}')">Edit</button> <button class="${u.disabled ? 'ghost' : 'warn'}" onclick="toggleUser('${u.id}')">${u.disabled ? 'Turn on' : 'Turn off'}</button></td></tr>`).join('');
+  if (first) { first = false; $('org').value = s.orgName; $('smsOn').value = s.sms.enabled ? '1' : '0'; $('smsMethod').value = s.sms.method || 'GET'; $('smsUrl').value = s.sms.url || ''; $('smsBody').value = s.sms.body || ''; }
+}
+async function addUser(){
+  await api('/api/admin/user', { name: $('nName').value, phone: $('nPhone').value, role: $('nRole').value });
+  $('nName').value = ''; $('nPhone').value = ''; refresh();
+}
+async function editUser(id){
+  const u = users.find((x) => x.id === id);
+  const name = prompt('Name', u.name); if (name == null) return;
+  const phone = prompt('Phone', u.phone); if (phone == null) return;
+  const role = confirm('Make this person an ADMIN? (Cancel = staff)') ? 'admin' : 'staff';
+  await api('/api/admin/user', { id, name, phone, role, disabled: u.disabled }); refresh();
+}
+async function toggleUser(id){
+  const u = users.find((x) => x.id === id);
+  await api('/api/admin/user', { id, name: u.name, phone: u.phone, role: u.role, disabled: !u.disabled }); refresh();
+}
+async function saveSms(){
+  await api('/api/admin/sms', { enabled: $('smsOn').value === '1', method: $('smsMethod').value, url: $('smsUrl').value, body: $('smsBody').value, orgName: $('org').value });
+  $('smsMsg').textContent = 'Saved.';
+}
+async function testSms(){
+  const r = await api('/api/admin/sms-test', { phone: $('testPhone').value });
+  $('smsMsg').textContent = r.ok ? 'SMS company accepted the message.' : 'SMS failed — check the URL / key.';
+}
+if (KEY) refresh().catch(() => {});
+setInterval(() => { if (!$('app').hidden) refresh().catch(() => {}); }, 5000);
+</script>
+</body>
+</html>
