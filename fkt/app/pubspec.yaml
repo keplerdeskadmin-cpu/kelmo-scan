@@ -22,3 +22,8 @@ dependencies:
 
 flutter:
   uses-material-design: true
+
+# Same versions as Kelmo Scan (newer ones need compileSdk 36, which file_picker 8 does not use).
+dependency_overrides:
+  flutter_plugin_android_lifecycle: 2.0.35
+  image_picker_android: 0.8.13+25
