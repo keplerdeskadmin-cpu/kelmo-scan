@@ -122,7 +122,7 @@ class AppThemes {
     ),
     // ── DARK 1 — midnight navy + gold (image 4)
     AppThemeId.midnightGold: const AppPalette(
-      id: AppThemeId.midnightGold, name: 'Midnight Gold', brightness: Brightness.dark,
+      id: AppThemeId.midnightGold, name: 'Midnight Gold', brightness: Brightness.light,
       background: Color(0xFF0A1330), surface: Color(0xFF13213F), surfaceAlt: Color(0xFF1A2A4D),
       appBar: Color(0xFF0A1330), onAppBar: Color(0xFFF3F4F8),
       text: Color(0xFFF3F4F8), textMuted: Color(0xFFA1ACC4),
@@ -134,7 +134,7 @@ class AppThemes {
     ),
     // ── DARK 2 — pure black with luxe gold borders (images 5 & 6, identical)
     AppThemeId.blackGold: const AppPalette(
-      id: AppThemeId.blackGold, name: 'Black Gold', brightness: Brightness.dark,
+      id: AppThemeId.blackGold, name: 'Black Gold', brightness: Brightness.light,
       background: Color(0xFF050505), surface: Color(0xFF15130F), surfaceAlt: Color(0xFF1E1A12),
       appBar: Color(0xFF050505), onAppBar: Color(0xFFE2C26C),
       text: Color(0xFFF6F1E3), textMuted: Color(0xFFA79C7D),
@@ -146,7 +146,7 @@ class AppThemes {
     ),
     // ── DARK 3 — charcoal with sand/tan folder tiles (image 7)
     AppThemeId.charcoalSand: const AppPalette(
-      id: AppThemeId.charcoalSand, name: 'Charcoal Sand', brightness: Brightness.dark,
+      id: AppThemeId.charcoalSand, name: 'Charcoal Sand', brightness: Brightness.light,
       background: Color(0xFF161719), surface: Color(0xFF212224), surfaceAlt: Color(0xFF2A2B2E),
       appBar: Color(0xFF161719), onAppBar: Color(0xFFF1ECE3),
       text: Color(0xFFF1ECE3), textMuted: Color(0xFFA9A398),

@@ -58,6 +58,7 @@ class _Stamp extends _Item {
   Offset center; // normalised
   double widthFrac; // stamp width / image width
   double rotation = 0; // radians (two-finger turn)
+  double opacity = 1; // 0.1..1 — "light / low" slider
   String? file; // PNG name inside the page's markup folder once saved
 }
 
@@ -72,7 +73,7 @@ Map<String, Object?> _itemToJson(_Item it) {
     return {'t': 'h', 'k': it.kind, 'a': [it.a.dx, it.a.dy], 'b': [it.b.dx, it.b.dy], 'c': it.color.toARGB32(), 'w': it.width};
   }
   final st = it as _Stamp;
-  return {'t': 'i', 'f': st.file, 'x': st.center.dx, 'y': st.center.dy, 'w': st.widthFrac, 'r': st.rotation};
+  return {'t': 'i', 'f': st.file, 'x': st.center.dx, 'y': st.center.dy, 'w': st.widthFrac, 'r': st.rotation, 'op': st.opacity};
 }
 
 Future<_Item?> _itemFromJson(Map<String, dynamic> j, String dir) async {
@@ -91,6 +92,7 @@ Future<_Item?> _itemFromJson(Map<String, dynamic> j, String dir) async {
       if (!f.existsSync()) return null;
       final st = _Stamp(await _decode(await f.readAsBytes()), Offset(d(j['x']), d(j['y'])), d(j['w']))
         ..rotation = d(j['r'])
+        ..opacity = j['op'] == null ? 1 : d(j['op'])
         ..file = j['f'] as String;
       return st;
   }
@@ -213,7 +215,9 @@ class _MarkPainter extends CustomPainter {
         canvas.rotate(it.rotation);
         final local = Rect.fromCenter(center: Offset.zero, width: r.width, height: r.height);
         canvas.drawImageRect(it.img, Rect.fromLTWH(0, 0, it.img.width.toDouble(), it.img.height.toDouble()), local,
-            Paint()..filterQuality = FilterQuality.high);
+            Paint()
+              ..filterQuality = FilterQuality.high
+              ..color = Color.fromRGBO(255, 255, 255, it.opacity));
         if (identical(it, selected)) {
           canvas.drawRect(local.inflate(4), Paint()
             ..color = const Color(0xFF2E9CF0)
@@ -585,7 +589,48 @@ class _MarkupScreenState extends State<MarkupScreen> {
         ),
         if (_busy) Positioned.fill(child: Container(color: Colors.black45, child: const Center(child: CircularProgressIndicator(color: Colors.white)))),
       ]),
-      bottomNavigationBar: Container(color: p.appBar, child: SafeArea(top: false, child: _pen ? _penPanel() : _sigPanel())),
+      bottomNavigationBar: Container(color: p.appBar, child: SafeArea(top: false, child: _pen ? _penPanel() : _sel != null ? _itemPanel() : _sigPanel())),
+    );
+  }
+
+  /// Selected picture / stamp / signature / text: light-dark (opacity), turn, size, remove.
+  Widget _itemPanel() {
+    final it = _sel!;
+    Widget btn(IconData i, String t, VoidCallback on) => InkWell(
+          onTap: on,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Icon(i, color: Colors.white),
+              Text(t, style: const TextStyle(color: Colors.white, fontSize: 11)),
+            ]),
+          ),
+        );
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Row(children: [
+          const Icon(Icons.brightness_low, color: Colors.white70, size: 20),
+          const SizedBox(width: 6),
+          const Text('Light', style: TextStyle(color: Colors.white)),
+          Expanded(
+            child: Slider(
+              value: it.opacity, min: .1, max: 1, activeColor: const Color(0xFF26A69A),
+              onChanged: (v) => setState(() { it.opacity = v; _rev++; }),
+            ),
+          ),
+          const Text('Dark', style: TextStyle(color: Colors.white)),
+          SizedBox(width: 44, child: Text(' ${(it.opacity * 100).round()}%', style: const TextStyle(color: Colors.white))),
+        ]),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
+          btn(Icons.rotate_left, 'Turn left', () => setState(() => it.rotation -= math.pi / 2)),
+          btn(Icons.rotate_right, 'Turn right', () => setState(() => it.rotation += math.pi / 2)),
+          btn(Icons.remove_circle_outline, 'Smaller', () => setState(() => it.widthFrac = (it.widthFrac * .85).clamp(.05, 1.5).toDouble())),
+          btn(Icons.add_circle_outline, 'Bigger', () => setState(() => it.widthFrac = (it.widthFrac * 1.15).clamp(.05, 1.5).toDouble())),
+          btn(Icons.delete_outline, 'Remove', _deleteSel),
+          btn(Icons.check, 'Done', () => setState(() => _sel = null)),
+        ]),
+      ]),
     );
   }
 
