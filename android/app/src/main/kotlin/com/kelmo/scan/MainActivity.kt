@@ -194,10 +194,13 @@ class MainActivity : FlutterFragmentActivity() {   // BiometricPrompt needs a Fr
                     ocrWorker.execute {
                         try {
                             val path = call.argument<String>("path")!!
-                            val langs = call.argument<String>("langs") ?: "eng"
-                            // auto-orientation: probe 4 rotations with the English model on a small copy
+                            var langs = call.argument<String>("langs") ?: "eng"
+                            // auto language + orientation: probe on a small copy (with the page's own language)
                             val probe = DocumentProcessor.prepareForOcr(path, 1100)
-                            val rot = try { TessEngine.bestRotation(applicationContext, probe) } finally { probe.recycle() }
+                            val rot = try {
+                                if (langs == "auto") langs = TessEngine.detectLang(applicationContext, probe)
+                                TessEngine.bestRotation(applicationContext, probe, if (langs.startsWith("urd")) "urd" else "eng")
+                            } finally { probe.recycle() }
                             val text = if (langs.contains("urd")) {
                                 // Urdu: split into lines ourselves, then read line by line
                                 val lines = DocumentProcessor.segmentLines(path, 3200, rot)

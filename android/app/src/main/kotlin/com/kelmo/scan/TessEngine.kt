@@ -99,10 +99,28 @@ object TessEngine {
         return out.toString()
     }
 
-    /** Which rotation (0/90/180/270 clockwise) makes the text readable? English model on a small copy. */
+    /** Auto language: reads a small copy with English and with Urdu, keeps the one Tesseract is surer of. */
     @Synchronized
-    fun bestRotation(ctx: Context, bmp: Bitmap): Int {
-        val t = engine(prepareData(ctx), "eng")
+    fun detectLang(ctx: Context, bmp: Bitmap): String {
+        val base = prepareData(ctx)
+        fun conf(lang: String): Int {
+            val t = engine(base, lang)
+            t.setPageSegMode(TessBaseAPI.PageSegMode.PSM_AUTO)
+            t.setImage(bmp)
+            t.getUTF8Text()
+            val c = t.meanConfidence()
+            t.clear()
+            return c
+        }
+        val en = conf("eng")
+        val ur = conf("urd")
+        return if (ur > en) "urd" else "eng"
+    }
+
+    /** Which rotation (0/90/180/270 clockwise) makes the text readable? Probe on a small copy. */
+    @Synchronized
+    fun bestRotation(ctx: Context, bmp: Bitmap, lang: String = "eng"): Int {
+        val t = engine(prepareData(ctx), lang)
         t.setPageSegMode(TessBaseAPI.PageSegMode.PSM_AUTO)
         var best = 0
         var bestScore = -1.0
