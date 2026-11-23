@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'api.dart';
 import 'models.dart';
@@ -16,6 +17,11 @@ class ChatStore extends ChangeNotifier {
   final Map<String, Map<String, int>> typing = {}; // chatId -> userId -> time
   final _incoming = StreamController<Msg>.broadcast();
   Stream<Msg> get incoming => _incoming.stream;
+  final _notices = StreamController<String>.broadcast();
+  Stream<String> get notices => _notices.stream; // short messages for a snack bar
+  static const _sms = MethodChannel('kepler/sms');
+  bool gatewayOn = false; // this phone sends login SMS
+  int smsSent = 0;
 
   String? openChatId;
   bool connected = false, started = false;
@@ -102,6 +108,7 @@ class ChatStore extends ChangeNotifier {
         refresh();
         for (final o in List.of(_outbox)) { ch.sink.add(jsonEncode(o)); }
         _outbox.clear();
+        if (Session.smsGateway && Session.isAdmin) ch.sink.add(jsonEncode({'t': 'gateway', 'on': true}));
       }).catchError((_) => _lost());
       _sub = ch.stream.listen((d) => _event(d as String), onDone: _lost, onError: (_) => _lost());
       _ping?.cancel();
@@ -184,7 +191,11 @@ class ChatStore extends ChangeNotifier {
         }
       case 'user':
         final u = AppUser.fromJson(o['user'] as Map<String, dynamic>);
-        users[u.id] = u;
+        if (o['user']['approved'] == false || o['user']['disabled'] == true) {
+          users.remove(u.id);
+        } else {
+          users[u.id] = u;
+        }
         if (u.id == me) Session.setMe(o['user'] as Map<String, dynamic>);
       case 'chat':
         final c = Chat.fromJson(o['chat'] as Map<String, dynamic>);
@@ -196,6 +207,15 @@ class ChatStore extends ChangeNotifier {
           chats.add(c);
         }
         _sort();
+      case 'gateway':
+        gatewayOn = o['on'] == true;
+      case 'sms':
+        _sendSms(o['id'] as String? ?? '', o['phone'] as String, o['text'] as String);
+        return;
+      case 'pending':
+        final u = AppUser.fromJson(o['user'] as Map<String, dynamic>);
+        _notices.add('New staff ${u.phone} is waiting for your approval (Menu → Admin)');
+        return;
       case 'left':
         chats.removeWhere((x) => x.id == o['chatId']);
       case 'deleted':
@@ -207,6 +227,23 @@ class ChatStore extends ChangeNotifier {
       default:
         return;
     }
+    notifyListeners();
+  }
+
+  Future<void> _sendSms(String id, String phone, String text) async {
+    var ok = false;
+    try {
+      ok = await _sms.invokeMethod<bool>('send', {'phone': '+$phone', 'text': text}) ?? false;
+    } catch (_) {}
+    if (ok) smsSent++;
+    _send({'t': 'smsResult', 'id': id, 'ok': ok});
+    notifyListeners();
+  }
+
+  void setGateway(bool on) {
+    Session.setSmsGateway(on);
+    _send({'t': 'gateway', 'on': on});
+    if (!on) gatewayOn = false;
     notifyListeners();
   }
 

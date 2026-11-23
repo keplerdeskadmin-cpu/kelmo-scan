@@ -1,4 +1,4 @@
-# FKT Messenger — server
+# Kepler Messenger — server
 
 Staff chat server for Fly Kawn Travel. Node 18+ only, no npm packages.
 

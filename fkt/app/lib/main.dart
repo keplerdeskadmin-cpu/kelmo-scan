@@ -6,7 +6,7 @@ import 'models.dart';
 import 'screens/chat_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/login_screen.dart';
-import 'screens/server_screen.dart';
+import 'screens/onboarding_screens.dart';
 import 'session.dart';
 import 'store.dart';
 import 'ui.dart';
@@ -28,12 +28,16 @@ class FktApp extends StatefulWidget {
 
 class _FktAppState extends State<FktApp> with WidgetsBindingObserver {
   StreamSubscription<Msg>? _sub;
+  StreamSubscription<String>? _sub2;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     final store = context.read<ChatStore>();
+    _sub2 = store.notices.listen((t) => messengerKey.currentState
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(behavior: SnackBarBehavior.floating, backgroundColor: navy, content: Text(t))));
     _sub = store.incoming.listen((m) {
       final c = store.chat(m.chatId);
       if (c == null) return;
@@ -62,19 +66,22 @@ class _FktAppState extends State<FktApp> with WidgetsBindingObserver {
   @override
   void dispose() {
     _sub?.cancel();
+    _sub2?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final Widget home = Session.server == null
-        ? const ServerScreen()
-        : Session.token == null
-            ? const LoginScreen()
-            : const HomeScreen();
+    final Widget home = Session.token == null
+        ? const LoginScreen()
+        : !Session.hasName
+            ? const NameScreen()
+            : !Session.approved
+                ? const PendingScreen()
+                : const HomeScreen();
     return MaterialApp(
-      title: 'FKT Messenger',
+      title: 'Kepler Messenger',
       debugShowCheckedModeBanner: false,
       navigatorKey: navKey,
       scaffoldMessengerKey: messengerKey,

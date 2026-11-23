@@ -1,4 +1,4 @@
-// FKT Messenger server — staff chat for Fly Kawn Travel
+// Kepler Messenger server — staff chat (Fly Kawn Travel)
 // Node 18+, no npm packages. Run:  node server.js   (port 3100, data in ./data)
 'use strict';
 const http = require('http');
@@ -54,10 +54,12 @@ function normPhone(p) {
   return d;
 }
 const userById = (uid) => db.users.find((u) => u.id === uid);
+const isApproved = (u) => u && u.approved !== false && !u.disabled;
 const publicUser = (u) => u && ({
   id: u.id, phone: u.phone, name: u.name, about: u.about || '', role: u.role,
-  online: online.has(u.id), lastSeen: u.lastSeen || 0, disabled: !!u.disabled,
+  online: online.has(u.id), lastSeen: u.lastSeen || 0, disabled: !!u.disabled, approved: u.approved !== false,
 });
+const appName = () => db.settings.orgName || 'Kepler';
 
 // ───────── messages (jsonl per chat, cached in memory)
 const msgCache = new Map(); // chatId -> array
@@ -100,6 +102,7 @@ const isMember = (c, uid) => c && c.members.includes(uid);
 // ───────── realtime (WebSocket, RFC 6455, text frames only)
 const sockets = new Map(); // userId -> Set(socket)
 const online = new Set();
+const gateways = new Set(); // sockets of admin phones that send login SMS from their SIM
 
 function wsSend(sock, obj) {
   if (sock.destroyed) return;
@@ -168,6 +171,13 @@ function handleWs(uid, sock, msg) {
       break;
     }
     case 'ping': wsSend(sock, { t: 'pong' }); break;
+    case 'gateway': {
+      const u = userById(uid);
+      if (o.on && u && u.role === 'admin') gateways.add(sock); else gateways.delete(sock);
+      wsSend(sock, { t: 'gateway', on: gateways.has(sock) });
+      break;
+    }
+    case 'smsResult': console.log(`[sms] ${o.ok ? 'sent' : 'FAILED'} via phone gateway (${o.id})`); break;
   }
 }
 
@@ -176,7 +186,7 @@ function upgrade(req, sock) {
   const s = db.sessions[u.searchParams.get('token') || ''];
   const user = s && userById(s.userId);
   const key = req.headers['sec-websocket-key'];
-  if (u.pathname !== '/ws' || !user || user.disabled || !key) { sock.end('HTTP/1.1 401 Unauthorized\r\n\r\n'); return; }
+  if (u.pathname !== '/ws' || !isApproved(user) || !key) { sock.end('HTTP/1.1 401 Unauthorized\r\n\r\n'); return; }
   const accept = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
   sock.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + '\r\n\r\n');
   sock.setNoDelay(true);
@@ -215,6 +225,7 @@ function upgrade(req, sock) {
     }
   });
   const gone = () => {
+    gateways.delete(sock);
     if (!set.has(sock)) return;
     set.delete(sock);
     if (set.size === 0) { sockets.delete(uid); setPresence(uid, false); }
@@ -239,6 +250,11 @@ function fileMeta(fid) {
 const otps = new Map(); // phone -> {code, exp, tries}
 const otpLog = [];      // for the admin panel when SMS is not set up
 function sendSms(phone, text) {
+  for (const g of gateways) {
+    if (g.destroyed) { gateways.delete(g); continue; }
+    wsSend(g, { t: 'sms', id: id(4), phone, text });
+    return Promise.resolve(true);
+  }
   const sms = db.settings.sms || {};
   if (!sms.enabled || !sms.url) return Promise.resolve(false);
   const fill = (s, enc) => String(s || '').replace(/\{phone\}/g, enc ? encodeURIComponent(phone) : phone)
@@ -299,23 +315,25 @@ async function route(req, res) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(html);
   }
-  if (p === '/api/ping') return json(res, 200, { ok: true, app: 'fkt-messenger', name: db.settings.orgName || 'FKT' });
+  if (p === '/api/ping') return json(res, 200, { ok: true, app: 'fkt-messenger', name: appName() });
 
   // ── login
   if (p === '/api/auth/request' && req.method === 'POST') {
     const b = await bodyJson(req);
     const phone = normPhone(b.phone);
+    if (phone.length < 11 || phone.length > 15) return json(res, 400, { error: 'Please type your full mobile number.' });
     const user = db.users.find((x) => x.phone === phone);
-    if (!user || user.disabled) return json(res, 403, { error: 'This number is not added by the admin.' });
+    if (user && user.disabled) return json(res, 403, { error: 'This account is turned off. Contact your admin.' });
+    if (!user && db.settings.openSignup === false) return json(res, 403, { error: 'This number is not added by the admin.' });
     const last = otps.get(phone);
     if (last && now() - last.sent < 30000) return json(res, 429, { error: 'Please wait 30 seconds before asking again.' });
     const code = String(crypto.randomInt(100000, 1000000));
     otps.set(phone, { code, exp: now() + 10 * 60000, tries: 0, sent: now() });
-    const text = `${db.settings.orgName || 'FKT'} Messenger code: ${code}`;
+    const text = `${code} is your ${appName()} Messenger code. Do not share it.`;
     const ok = await sendSms(phone, text);
-    otpLog.unshift({ phone, name: user.name, code, ts: now(), sms: ok });
+    otpLog.unshift({ phone, name: user ? user.name : '(new)', code, ts: now(), sms: ok });
     otpLog.length = Math.min(otpLog.length, 30);
-    console.log(`[login code] ${user.name} ${phone}: ${code}${ok ? ' (SMS sent)' : ' (no SMS — see admin panel)'}`);
+    console.log(`[login code] ${user ? user.name : 'new'} ${phone}: ${code}${ok ? ' (SMS sent)' : ' (no SMS — see admin panel)'}`);
     return json(res, 200, { ok: true, via: ok ? 'sms' : 'admin' });
   }
   if (p === '/api/auth/verify' && req.method === 'POST') {
@@ -326,12 +344,21 @@ async function route(req, res) {
     if (++o.tries > 5) { otps.delete(phone); return json(res, 400, { error: 'Too many tries. Ask for a new code.' }); }
     if (String(b.code || '').trim() !== o.code) return json(res, 400, { error: 'Wrong code.' });
     otps.delete(phone);
-    const user = db.users.find((x) => x.phone === phone);
-    if (!user || user.disabled) return json(res, 403, { error: 'Account is turned off.' });
+    let user = db.users.find((x) => x.phone === phone);
+    if (user && user.disabled) return json(res, 403, { error: 'Account is turned off.' });
+    let isNew = false;
+    if (!user) {
+      const first = !db.users.some((x) => x.role === 'admin');
+      user = { id: id(6), phone, name: String(b.name || '').slice(0, 60), role: first ? 'admin' : 'staff', created: now(),
+        approved: first || db.settings.requireApproval === false };
+      db.users.push(user); saveUsers();
+      isNew = true;
+      for (const a of db.users) if (a.role === 'admin' && a.id !== user.id) sendTo(a.id, { t: 'pending', user: publicUser(user) });
+    }
     const token = id(24);
     db.sessions[token] = { userId: user.id, created: now(), device: String(b.device || '').slice(0, 80) };
     saveSessions();
-    return json(res, 200, { token, user: publicUser(user) });
+    return json(res, 200, { token, user: publicUser(user), isNew });
   }
 
   // ── admin panel API (x-admin-key)
@@ -339,8 +366,9 @@ async function route(req, res) {
     if (!isAdminKey(req)) return json(res, 401, { error: 'Wrong admin key' });
     if (p === '/api/admin/state') {
       return json(res, 200, {
-        orgName: db.settings.orgName || 'FKT', users: db.users.map(publicUser), otps: otpLog,
-        sms: db.settings.sms, chats: db.chats.length,
+        orgName: appName(), users: db.users.map(publicUser), otps: otpLog,
+        sms: db.settings.sms, chats: db.chats.length, gateways: gateways.size,
+        openSignup: db.settings.openSignup !== false, requireApproval: db.settings.requireApproval !== false,
       });
     }
     if (p === '/api/admin/user' && req.method === 'POST') {
@@ -352,7 +380,8 @@ async function route(req, res) {
       if (!user) { user = { id: id(6), created: now() }; db.users.push(user); }
       const dup = db.users.find((x) => x.phone === phone && x.id !== user.id);
       if (dup) return json(res, 400, { error: 'This number already belongs to ' + dup.name });
-      Object.assign(user, { phone, name: String(b.name).slice(0, 60), role: b.role === 'admin' ? 'admin' : 'staff', disabled: !!b.disabled });
+      Object.assign(user, { phone, name: String(b.name).slice(0, 60), role: b.role === 'admin' ? 'admin' : 'staff', disabled: !!b.disabled,
+        approved: b.approved !== false });
       if (user.disabled) for (const [t, s] of Object.entries(db.sessions)) if (s.userId === user.id) delete db.sessions[t];
       saveUsers(); saveSessions();
       broadcast({ t: 'user', user: publicUser(user) });
@@ -363,12 +392,14 @@ async function route(req, res) {
       db.settings.sms = { enabled: !!b.enabled, method: b.method === 'POST' ? 'POST' : 'GET', url: String(b.url || ''),
         body: String(b.body || ''), contentType: String(b.contentType || '') };
       if (b.orgName) db.settings.orgName = String(b.orgName).slice(0, 40);
+      if (b.openSignup != null) db.settings.openSignup = !!b.openSignup;
+      if (b.requireApproval != null) db.settings.requireApproval = !!b.requireApproval;
       saveSettings();
       return json(res, 200, { ok: true });
     }
     if (p === '/api/admin/sms-test' && req.method === 'POST') {
       const b = await bodyJson(req);
-      const ok = await sendSms(normPhone(b.phone), 'FKT Messenger test SMS');
+      const ok = await sendSms(normPhone(b.phone), `${appName()} Messenger test SMS`);
       return json(res, 200, { ok });
     }
     return json(res, 404, { error: 'Not found' });
@@ -387,6 +418,7 @@ async function route(req, res) {
   }
 
   // ── everything below needs a login
+  let m0;
   const me = auth(req);
   if (!me) return json(res, 401, { error: 'Login required' });
 
@@ -408,7 +440,7 @@ async function route(req, res) {
     out.on('error', () => json(res, 500, { error: 'Could not save file' }));
     return;
   }
-  if (p === '/api/me' && req.method === 'GET') return json(res, 200, { user: publicUser(me), orgName: db.settings.orgName || 'FKT' });
+  if (p === '/api/me' && req.method === 'GET') return json(res, 200, { user: publicUser(me), orgName: appName() });
   if (p === '/api/me' && req.method === 'POST') {
     const b = await bodyJson(req);
     if (b.name) me.name = String(b.name).slice(0, 60);
@@ -422,7 +454,36 @@ async function route(req, res) {
     delete db.sessions[tok]; saveSessions();
     return json(res, 200, { ok: true });
   }
-  if (p === '/api/users') return json(res, 200, { users: db.users.filter((x) => !x.disabled).map(publicUser) });
+  if (!isApproved(me)) return json(res, 403, { error: 'Waiting for admin approval', pending: true });
+
+  // ── staff management inside the app (admins)
+  if (p === '/api/staff' && req.method === 'GET') {
+    if (me.role !== 'admin') return json(res, 403, { error: 'Admins only' });
+    return json(res, 200, { users: db.users.map(publicUser), gatewayOnline: gateways.size > 0,
+      requireApproval: db.settings.requireApproval !== false, openSignup: db.settings.openSignup !== false });
+  }
+  if ((m0 = p.match(/^\/api\/staff\/([a-f0-9]+)$/)) && req.method === 'POST') {
+    if (me.role !== 'admin') return json(res, 403, { error: 'Admins only' });
+    const u2 = userById(m0[1]);
+    if (!u2) return json(res, 404, { error: 'Not found' });
+    const b = await bodyJson(req);
+    if (b.approved != null) u2.approved = !!b.approved;
+    if (b.disabled != null && u2.id !== me.id) u2.disabled = !!b.disabled;
+    if (b.role && u2.id !== me.id) u2.role = b.role === 'admin' ? 'admin' : 'staff';
+    if (u2.disabled) for (const [t, s2] of Object.entries(db.sessions)) if (s2.userId === u2.id) delete db.sessions[t];
+    saveUsers(); saveSessions();
+    broadcast({ t: 'user', user: publicUser(u2) });
+    return json(res, 200, { user: publicUser(u2) });
+  }
+  if (p === '/api/settings' && req.method === 'POST') {
+    if (me.role !== 'admin') return json(res, 403, { error: 'Admins only' });
+    const b = await bodyJson(req);
+    if (b.requireApproval != null) db.settings.requireApproval = !!b.requireApproval;
+    if (b.openSignup != null) db.settings.openSignup = !!b.openSignup;
+    saveSettings();
+    return json(res, 200, { ok: true });
+  }
+  if (p === '/api/users') return json(res, 200, { users: db.users.filter(isApproved).map(publicUser) });
   if (p === '/api/chats' && req.method === 'GET') {
     const list = db.chats.filter((c) => isMember(c, me.id)).map((c) => chatView(c, me.id));
     list.sort((a, b) => ((b.last && b.last.ts) || b.created) - ((a.last && a.last.ts) || a.created));
@@ -491,6 +552,6 @@ const server = http.createServer((req, res) => {
 });
 server.on('upgrade', upgrade);
 server.listen(PORT, () => {
-  console.log(`FKT Messenger server on port ${PORT}`);
+  console.log(`Kepler Messenger server on port ${PORT}`);
   console.log(`Admin panel: http://localhost:${PORT}/admin   admin key: ${db.settings.adminKey}`);
 });

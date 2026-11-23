@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 import '../models.dart';
 import '../store.dart';
 import '../ui.dart';
+import '../session.dart';
+import 'admin_screen.dart';
 import 'chat_screen.dart';
 import 'new_chat_screen.dart';
 import 'new_group_screen.dart';
@@ -43,7 +45,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 onChanged: (v) => setState(() => _q = v),
               )
             : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('FKT Messenger', style: TextStyle(fontWeight: FontWeight.w700)),
+                const Text('Kepler Messenger', style: TextStyle(fontWeight: FontWeight.w700)),
                 if (!s.connected) const Text('Connecting…', style: TextStyle(fontSize: 12, color: Color(0xFFC8D1E6))),
               ]),
         actions: [
@@ -56,10 +58,12 @@ class _HomeScreenState extends State<HomeScreen> {
             onSelected: (v) {
               if (v == 'group') Navigator.push(context, MaterialPageRoute(builder: (_) => const NewGroupScreen()));
               if (v == 'profile') Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen()));
+              if (v == 'admin') Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminScreen()));
             },
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'group', child: Text('New group')),
-              PopupMenuItem(value: 'profile', child: Text('Profile & settings')),
+            itemBuilder: (_) => [
+              const PopupMenuItem(value: 'group', child: Text('New group')),
+              if (Session.isAdmin) const PopupMenuItem(value: 'admin', child: Text('Admin (approve staff, SMS)')),
+              const PopupMenuItem(value: 'profile', child: Text('Profile & settings')),
             ],
           ),
         ],

@@ -102,3 +102,39 @@ Widget tickIcon(int t, {double size = 16}) {
 
 void toast(BuildContext context, String m) =>
     ScaffoldMessenger.of(context)..hideCurrentSnackBar()..showSnackBar(SnackBar(content: Text(m)));
+
+/// Kepler logo: navy tile, yellow planet with a blue ring, inside a chat bubble shape.
+class KeplerLogo extends StatelessWidget {
+  const KeplerLogo({super.key, this.size = 80});
+  final double size;
+  @override
+  Widget build(BuildContext context) => Center(child: SizedBox(width: size, height: size, child: CustomPaint(painter: _LogoPainter())));
+}
+
+class _LogoPainter extends CustomPainter {
+  @override
+  void paint(Canvas c, Size s) {
+    final w = s.width;
+    c.drawRRect(RRect.fromRectAndRadius(Offset.zero & s, Radius.circular(w * .24)), Paint()..color = navy);
+    final ctr = Offset(w * .5, w * .5);
+    c.save();
+    c.translate(ctr.dx, ctr.dy);
+    c.rotate(-0.45);
+    final ring = Paint()
+      ..color = const Color(0xFF3FA9F5)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = w * .05;
+    c.drawOval(Rect.fromCenter(center: Offset.zero, width: w * .78, height: w * .26), ring);
+    c.restore();
+    c.drawCircle(ctr, w * .22, Paint()..color = gold);
+    c.save();
+    c.translate(ctr.dx, ctr.dy);
+    c.rotate(-0.45);
+    c.clipRect(Rect.fromLTRB(-w, 0, w, w));
+    c.drawOval(Rect.fromCenter(center: Offset.zero, width: w * .78, height: w * .26), ring);
+    c.restore();
+  }
+
+  @override
+  bool shouldRepaint(_) => false;
+}

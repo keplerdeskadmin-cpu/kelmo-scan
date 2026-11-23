@@ -3,13 +3,17 @@ import pathlib, re, shutil
 root = pathlib.Path(__file__).resolve().parent.parent
 man = root / 'android/app/src/main/AndroidManifest.xml'
 s = man.read_text()
-perms = ['INTERNET', 'RECORD_AUDIO', 'VIBRATE']
+perms = ['INTERNET', 'RECORD_AUDIO', 'VIBRATE', 'SEND_SMS']
 add = ''.join(f'    <uses-permission android:name="android.permission.{p}"/>\n' for p in perms if p not in s)
 s = s.replace('<application', add + '    <application', 1)
-s = re.sub(r'android:label="[^"]*"', 'android:label="FKT Messenger"', s, count=1)
+s = re.sub(r'android:label="[^"]*"', 'android:label="Kepler Messenger"', s, count=1)
 if 'usesCleartextTraffic' not in s:
     s = s.replace('<application', '<application\n        android:usesCleartextTraffic="true"', 1)
 man.write_text(s)
+
+kt = root / 'android/app/src/main/kotlin/com/kepler/kepler_messenger/MainActivity.kt'
+kt.parent.mkdir(parents=True, exist_ok=True)
+shutil.copy(root / 'android_src/MainActivity.kt', kt)
 
 res = root / 'android/app/src/main/res'
 for d in (root / 'android_res').iterdir():

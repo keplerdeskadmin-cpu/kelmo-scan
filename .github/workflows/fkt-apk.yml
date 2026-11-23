@@ -1,4 +1,4 @@
-name: Build FKT Messenger
+name: Build Kepler Messenger
 
 on:
   push:
@@ -34,7 +34,7 @@ jobs:
       - name: Create Android project
         run: |
           flutter --version
-          flutter create --org com.fkt --project-name fkt_messenger --platforms android .
+          flutter create --org com.kepler --project-name kepler_messenger --platforms android .
           rm -rf test
           python3 tools/patch_android.py
 
@@ -57,14 +57,14 @@ jobs:
       - name: Collect files
         run: |
           mkdir -p "$GITHUB_WORKSPACE/out"
-          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk "$GITHUB_WORKSPACE/out/FKT-Messenger-arm64.apk"
-          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk "$GITHUB_WORKSPACE/out/FKT-Messenger-arm32.apk"
-          cd ../server && zip -r "$GITHUB_WORKSPACE/out/fkt-server.zip" server.js admin.html README.md
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk "$GITHUB_WORKSPACE/out/Kepler-Messenger-arm64.apk"
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk "$GITHUB_WORKSPACE/out/Kepler-Messenger-arm32.apk"
+          cd ../server && zip -r "$GITHUB_WORKSPACE/out/kepler-messenger-server.zip" server.js admin.html README.md
 
       - name: Publish (not marked latest, so Kelmo Scan updates are not affected)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: fkt-v1.0.${{ github.run_number }}
-          name: FKT Messenger 1.0.${{ github.run_number }}
+          name: Kepler Messenger 1.0.${{ github.run_number }}
           make_latest: false
           files: out/*

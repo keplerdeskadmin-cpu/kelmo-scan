@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FKT Messenger — Admin</title>
+<title>Kepler Messenger — Admin</title>
 <style>
 :root{--navy:#0F1E3D;--gold:#E9B949;--green:#1FA855;--line:#E2E7F0;--muted:#5B6478}
-*{box-sizing:border-box}body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:#F3F5F9;color:#14213D}
+[hidden]{display:none!important}*{box-sizing:border-box}body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:#F3F5F9;color:#14213D}
 header{background:var(--navy);color:#fff;padding:16px 20px;display:flex;align-items:center;gap:12px}
 header b{font-size:20px}header span{color:#C8D1E6;font-size:13px}
 main{max-width:980px;margin:0 auto;padding:16px;display:grid;gap:16px}
@@ -25,7 +25,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;p
 </style>
 </head>
 <body>
-<header><b>FKT Messenger</b><span>Admin panel</span></header>
+<header><b>Kepler Messenger</b><span>Admin panel</span></header>
 <div id="login"><section>
 <h2>Admin key</h2>
 <p class="note">The key is printed in the terminal when the server starts (<code>admin key: ...</code>).</p>
@@ -35,7 +35,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;p
 <main id="app" hidden>
 <section>
 <h2>Login codes</h2>
-<p class="note">When SMS is not set up, the 6-digit code a staff member asked for appears here — tell it to them.</p>
+<p class="note">Codes are sent by SMS from the office phone (Kepler Messenger → Admin → SMS sender ON). If no phone is connected, the code appears here — tell it to the person. <b id="gw"></b></p>
 <table><thead><tr><th>Name</th><th>Phone</th><th>Code</th><th>Time</th><th>SMS</th></tr></thead><tbody id="otps"></tbody></table>
 </section>
 <section>
@@ -86,10 +86,15 @@ async function refresh(){
   const s = await api('/api/admin/state');
   $('login').hidden = true; $('app').hidden = false;
   users = s.users;
+  $('gw').textContent = s.gateways ? 'SMS phone: connected ✓' : 'SMS phone: not connected';
   $('otps').innerHTML = s.otps.map((o) => `<tr><td>${esc(o.name)}</td><td>${esc(o.phone)}</td><td class="code">${esc(o.code)}</td><td>${t(o.ts)}</td><td>${o.sms ? 'sent' : '—'}</td></tr>`).join('') || '<tr><td colspan="5" class="note">No codes yet</td></tr>';
-  $('users').innerHTML = s.users.map((u) => `<tr><td><span class="dot ${u.online ? 'on' : ''}"></span>${esc(u.name)}</td><td>${esc(u.phone)}</td><td>${u.role}</td><td>${u.disabled ? 'Off' : (u.online ? 'Online' : 'Last seen ' + (u.lastSeen ? t(u.lastSeen) : '—'))}</td>
-  <td style="white-space:nowrap"><button class="ghost" onclick="editUser('${u.id}')">Edit</button> <button class="${u.disabled ? 'ghost' : 'warn'}" onclick="toggleUser('${u.id}')">${u.disabled ? 'Turn on' : 'Turn off'}</button></td></tr>`).join('');
+  $('users').innerHTML = s.users.map((u) => `<tr><td><span class="dot ${u.online ? 'on' : ''}"></span>${esc(u.name)}</td><td>${esc(u.phone)}</td><td>${u.role}</td><td>${u.disabled ? 'Off' : !u.approved ? '<b style="color:#B54708">Waiting approval</b>' : (u.online ? 'Online' : 'Last seen ' + (u.lastSeen ? t(u.lastSeen) : '—'))}</td>
+  <td style="white-space:nowrap">${u.approved ? '' : `<button onclick="approve('${u.id}')">Approve</button> `}<button class="ghost" onclick="editUser('${u.id}')">Edit</button> <button class="${u.disabled ? 'ghost' : 'warn'}" onclick="toggleUser('${u.id}')">${u.disabled ? 'Turn on' : 'Turn off'}</button></td></tr>`).join('');
   if (first) { first = false; $('org').value = s.orgName; $('smsOn').value = s.sms.enabled ? '1' : '0'; $('smsMethod').value = s.sms.method || 'GET'; $('smsUrl').value = s.sms.url || ''; $('smsBody').value = s.sms.body || ''; }
+}
+async function approve(id){
+  const u = users.find((x) => x.id === id);
+  await api('/api/admin/user', { id, name: u.name || u.phone, phone: u.phone, role: u.role, approved: true }); refresh();
 }
 async function addUser(){
   await api('/api/admin/user', { name: $('nName').value, phone: $('nPhone').value, role: $('nRole').value });

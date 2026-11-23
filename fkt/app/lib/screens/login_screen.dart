@@ -4,10 +4,9 @@ import '../api.dart';
 import '../session.dart';
 import '../store.dart';
 import '../ui.dart';
-import 'home_screen.dart';
-import 'server_screen.dart';
+import 'onboarding_screens.dart';
 
-/// Phone number → 6-digit code (SMS, or from the admin panel).
+/// WhatsApp-style login: your number → SMS code → (new) your name.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
   @override
@@ -19,13 +18,23 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _busy = false, _sent = false;
   String? _err, _info;
 
+  String get _number {
+    var d = _phone.text.replaceAll(RegExp(r'\D'), '');
+    if (d.startsWith('92')) d = d.substring(2);
+    if (d.startsWith('0')) d = d.substring(1);
+    return '0$d';
+  }
+
   Future<void> _request() async {
+    if (_number.length != 11) { setState(() => _err = 'Type your mobile number, e.g. 3001234567'); return; }
     setState(() { _busy = true; _err = null; });
     try {
-      final r = await Api.post('/api/auth/request', {'phone': _phone.text});
+      final r = await Api.post('/api/auth/request', {'phone': _number});
       setState(() {
         _sent = true;
-        _info = r['via'] == 'sms' ? 'Code sent by SMS.' : 'Ask your admin for the 6-digit code (shown in the admin panel).';
+        _info = r['via'] == 'sms'
+            ? 'We sent an SMS with a 6-digit code to +92 ${_number.substring(1)}.'
+            : 'SMS phone is not connected — ask your admin for the 6-digit code.';
       });
     } catch (e) {
       setState(() => _err = '$e');
@@ -35,14 +44,14 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _verify() async {
+    if (_code.text.trim().length != 6) { setState(() => _err = 'Type the 6-digit code'); return; }
     setState(() { _busy = true; _err = null; });
     try {
-      final r = await Api.post('/api/auth/verify', {'phone': _phone.text, 'code': _code.text, 'device': 'Android'});
+      final r = await Api.post('/api/auth/verify', {'phone': _number, 'code': _code.text.trim(), 'device': 'Android'});
       await Session.setLogin(r['token'] as String, r['user'] as Map<String, dynamic>);
       if (!mounted) return;
-      final store = context.read<ChatStore>();
-      store.stop();
-      Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const HomeScreen()), (_) => false);
+      context.read<ChatStore>().stop();
+      goAfterLogin(context);
     } catch (e) {
       setState(() => _err = '$e');
     } finally {
@@ -50,57 +59,99 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  Future<void> _serverSettings() async {
+    final c = TextEditingController(text: Session.server);
+    final v = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Server settings'),
+        content: TextField(controller: c, keyboardType: TextInputType.url, autocorrect: false,
+            decoration: const InputDecoration(labelText: 'Server address')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, Session.defaultServer), child: const Text('Default')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, c.text.trim()), child: const Text('Save')),
+        ],
+      ),
+    );
+    if (v == null || v.isEmpty) return;
+    var s = v.replaceAll(RegExp(r'/+$'), '');
+    if (!s.startsWith('http')) s = 'http://$s';
+    await Session.setServer(s);
+    try {
+      await Api.get('/api/ping');
+      if (mounted) toast(context, 'Connected to server ✓');
+    } catch (e) {
+      if (mounted) toast(context, 'Saved, but cannot reach it: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
-        backgroundColor: navy,
-        body: SafeArea(
-          child: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                const Icon(Icons.forum_rounded, color: gold, size: 64),
-                const SizedBox(height: 10),
-                const Text('Log in', textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w800)),
-                const SizedBox(height: 24),
-                Container(
-                  padding: const EdgeInsets.all(18),
-                  decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18)),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                    TextField(
-                      controller: _phone, enabled: !_sent, keyboardType: TextInputType.phone,
-                      decoration: const InputDecoration(labelText: 'Your phone number', hintText: '03xx xxxxxxx', prefixIcon: Icon(Icons.phone)),
-                    ),
-                    if (_sent) ...[
-                      const SizedBox(height: 12),
-                      Text(_info ?? '', style: const TextStyle(color: muted)),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: _code, keyboardType: TextInputType.number, maxLength: 6, autofocus: true,
-                        style: const TextStyle(fontSize: 22, letterSpacing: 6, fontWeight: FontWeight.w700),
-                        decoration: const InputDecoration(labelText: '6-digit code', counterText: ''),
-                      ),
-                    ],
-                    if (_err != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_err!, style: const TextStyle(color: Color(0xFFB42318)))),
-                    const SizedBox(height: 14),
-                    FilledButton(
-                      style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(50), backgroundColor: navy),
-                      onPressed: _busy ? null : (_sent ? _verify : _request),
-                      child: _busy
-                          ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white))
-                          : Text(_sent ? 'Verify' : 'Send code', style: const TextStyle(fontSize: 16)),
-                    ),
-                    if (_sent)
-                      TextButton(onPressed: _busy ? null : () => setState(() { _sent = false; _code.clear(); }), child: const Text('Change number / resend')),
-                  ]),
-                ),
-                TextButton(
-                  onPressed: () => Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const ServerScreen()), (_) => false),
-                  child: Text('Server: ${Session.server ?? ''}', style: const TextStyle(color: Color(0xFFC8D1E6))),
-                ),
-              ]),
+        appBar: AppBar(
+          backgroundColor: Colors.white, foregroundColor: navy, elevation: 0,
+          actions: [
+            PopupMenuButton<String>(
+              onSelected: (_) => _serverSettings(),
+              itemBuilder: (_) => const [PopupMenuItem(value: 'server', child: Text('Server settings'))],
             ),
-          ),
+          ],
+        ),
+        body: SafeArea(
+          child: ListView(padding: const EdgeInsets.fromLTRB(24, 0, 24, 24), children: [
+            const KeplerLogo(size: 84),
+            const SizedBox(height: 14),
+            Text(_sent ? 'Verify your number' : 'Enter your phone number', textAlign: TextAlign.center,
+                style: const TextStyle(color: navy, fontSize: 22, fontWeight: FontWeight.w800)),
+            const SizedBox(height: 8),
+            Text(_sent ? (_info ?? '') : 'Kepler Messenger will send an SMS to verify your number.',
+                textAlign: TextAlign.center, style: const TextStyle(color: muted)),
+            const SizedBox(height: 28),
+            if (!_sent)
+              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Container(
+                  height: 56, width: 78, alignment: Alignment.center,
+                  decoration: BoxDecoration(border: Border.all(color: const Color(0xFFCBD3E1)), borderRadius: BorderRadius.circular(12)),
+                  child: const Text('🇵🇰 +92', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextField(
+                    controller: _phone, autofocus: true, keyboardType: TextInputType.phone,
+                    style: const TextStyle(fontSize: 18, letterSpacing: 1),
+                    decoration: const InputDecoration(hintText: '300 1234567'),
+                    onSubmitted: (_) => _request(),
+                  ),
+                ),
+              ])
+            else
+              Center(
+                child: SizedBox(
+                  width: 220,
+                  child: TextField(
+                    controller: _code, autofocus: true, keyboardType: TextInputType.number, maxLength: 6, textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 28, letterSpacing: 10, fontWeight: FontWeight.w700),
+                    decoration: const InputDecoration(hintText: '––––––', counterText: ''),
+                    onChanged: (v) { if (v.length == 6) _verify(); },
+                  ),
+                ),
+              ),
+            if (_err != null)
+              Padding(padding: const EdgeInsets.only(top: 10), child: Text(_err!, textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFB42318)))),
+            const SizedBox(height: 24),
+            FilledButton(
+              style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(52), backgroundColor: waGreen),
+              onPressed: _busy ? null : (_sent ? _verify : _request),
+              child: _busy
+                  ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white))
+                  : Text(_sent ? 'Verify' : 'Next', style: const TextStyle(fontSize: 17)),
+            ),
+            if (_sent)
+              TextButton(
+                onPressed: _busy ? null : () => setState(() { _sent = false; _code.clear(); _err = null; }),
+                child: Text('Wrong number? +92 ${_number.substring(1)} — change'),
+              ),
+          ]),
         ),
       );
 }

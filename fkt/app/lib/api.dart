@@ -12,7 +12,7 @@ class ApiError implements Exception {
   String toString() => message;
 }
 
-/// HTTP calls to the FKT server.
+/// HTTP calls to the Kepler Messenger server.
 class Api {
   static String get base => Session.server ?? '';
   static Map<String, String> get _h => {

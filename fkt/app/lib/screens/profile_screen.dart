@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import '../api.dart';
 import '../session.dart';
-import '../store.dart';
 import '../ui.dart';
-import 'login_screen.dart';
+import 'onboarding_screens.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -30,13 +28,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  Future<void> _logout() async {
-    try { await Api.post('/api/logout'); } catch (_) {}
-    if (!mounted) return;
-    context.read<ChatStore>().stop();
-    await Session.logout();
-    if (mounted) Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const LoginScreen()), (_) => false);
-  }
+  Future<void> _logout() => logoutTo(context);
 
   @override
   Widget build(BuildContext context) {
