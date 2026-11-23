@@ -300,8 +300,50 @@ class _DocumentScreenState extends State<DocumentScreen> {
     _load();
   }
 
+  /// Process All: the same filter on every page (re-made from the original photo + border).
+  Future<void> _processAll() async {
+    if (_pages.isEmpty) return;
+    const opts = [
+      (FilterMode.original, 'Original'),
+      (FilterMode.photo, 'Photo'),
+      (FilterMode.auto, 'Docs (color)'),
+      (FilterMode.bw, 'Docs (B&W)'),
+      (FilterMode.magicColor, 'Clear (color)'),
+      (FilterMode.grayscale, 'Clear (gray)'),
+    ];
+    final mode = await showDialog<FilterMode>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text('Process All (${_pages.length} pages)'),
+        children: [
+          for (final o in opts)
+            SimpleDialogOption(onPressed: () => Navigator.pop(ctx, o.$1), child: Text(o.$2, style: const TextStyle(fontSize: 16))),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(24, 8, 24, 0),
+            child: Text('Markup on these pages will be removed.', style: TextStyle(fontSize: 12, color: Color(0xFF6F7777))),
+          ),
+        ],
+      ),
+    );
+    if (mode == null) return;
+    final svc = ImageProcessingService.instance;
+    var done = 0;
+    await _work(() async {
+      for (final pg in List.of(_pages)) {
+        final flat = await svc.warp(pg.origPath, pg.corners);
+        final full = await svc.applyFilter(flat, mode);
+        final thumb = await svc.applyFilter(flat, mode, maxSide: 360);
+        await _repo.replacePage(pg.id, ScannedPage(origPath: pg.origPath, finalPath: full, thumbPath: thumb, corners: pg.corners, filter: mode.native));
+        done++;
+      }
+      unawaited(OcrIndexer.run());
+    });
+    if (mounted) _snack('$done page(s) processed');
+  }
+
   Future<void> _docMenu(String v) async {
     switch (v) {
+      case 'process': await _processAll();
       case 'select': setState(() { _selecting = true; _sel.clear(); });
       case 'sort': await _sortPages();
       case 'pdf': await _importPdf();
@@ -354,6 +396,7 @@ class _DocumentScreenState extends State<DocumentScreen> {
             itemBuilder: (_) => [
               csMenuItem('select', Icons.check_box, 'Select'),
               csMenuItem('sort', Icons.sort, 'Sort'),
+              csMenuItem('process', Icons.auto_fix_high, 'Process All'),
               const PopupMenuDivider(),
               csMenuItem('pdf', Icons.picture_as_pdf, 'Import PDF'),
               csMenuItem('images', Icons.add_photo_alternate, 'Import images'),

@@ -101,15 +101,22 @@ class DocExport {
   }
 
   static Future<String> pdf(List<ScanPage> pages, String name,
-      {ExportSize? size, String watermark = '', PdfSize? page}) async {
+      {ExportSize? size, String watermark = '', PdfSize? page, String password = ''}) async {
     final o = await PdfOpts.forDoc(pages.isEmpty ? null : pages.first.docId);
-    return PdfExporter.save(await images(pages, size ?? o.quality), safeName(name),
+    final path = await PdfExporter.save(await images(pages, size ?? o.quality), safeName(name),
         size: page ?? o.page, watermark: watermark, orientation: o.orientation, fill: o.fill);
+    if (password.isEmpty) return path;
+    // AES password protection (opens only with the password)
+    final out = path.replaceAll(RegExp(r'\.pdf$'), '') + '_locked.pdf';
+    await _ch.invokeMethod('protectPdf', {'path': path, 'out': out, 'password': password});
+    final f = File(out);
+    await f.rename(path);
+    return path;
   }
 
   static Future<void> sharePdf(List<ScanPage> pages, String name,
-      {ExportSize? size, String watermark = '', PdfSize? page}) async {
-    final path = await pdf(pages, name, size: size, watermark: watermark, page: page);
+      {ExportSize? size, String watermark = '', PdfSize? page, String password = ''}) async {
+    final path = await pdf(pages, name, size: size, watermark: watermark, page: page, password: password);
     await Share.shareXFiles([XFile(path, mimeType: 'application/pdf')], subject: name);
   }
 
@@ -123,8 +130,8 @@ class DocExport {
   }
 
   /// E-mail with the PDF attached; uses the Default Email (To / Subject) from Settings.
-  static Future<void> email(List<ScanPage> pages, String name, {String watermark = ''}) async {
-    final path = await pdf(pages, name, watermark: watermark);
+  static Future<void> email(List<ScanPage> pages, String name, {String watermark = '', String password = ''}) async {
+    final path = await pdf(pages, name, watermark: watermark, password: password);
     final s = AppSettings.instance;
     try {
       await _ch.invokeMethod('emailFile', {
@@ -171,8 +178,8 @@ class DocExport {
 
   /// Saves the PDF into Download/Kelmo Scan. Returns the full visible path.
   static Future<String> toStorage(List<ScanPage> pages, String name,
-      {ExportSize? size, String watermark = ''}) async {
-    final path = await pdf(pages, name, size: size, watermark: watermark);
+      {ExportSize? size, String watermark = '', String password = ''}) async {
+    final path = await pdf(pages, name, size: size, watermark: watermark, password: password);
     final n = '${safeName(name)}_${DateTime.now().millisecondsSinceEpoch}.pdf';
     return await _ch.invokeMethod<String>('saveToDownloads', {'path': path, 'name': n, 'mime': 'application/pdf'}) ??
         'Download/Kelmo Scan/$n';

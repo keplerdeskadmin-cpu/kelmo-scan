@@ -64,6 +64,7 @@ flutter {
 
 dependencies {
     implementation("org.opencv:opencv:4.9.0")
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0") // PDF password
     implementation("androidx.exifinterface:exifinterface:1.3.7")
 implementation("androidx.appcompat:appcompat:1.6.1")
 implementation("androidx.biometric:biometric:1.1.0")

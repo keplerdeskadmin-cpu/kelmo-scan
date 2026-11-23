@@ -15,6 +15,7 @@
 
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import '../models/scan_document.dart';
@@ -38,7 +39,7 @@ import 'settings_screen.dart';
 import 'share_screen.dart';
 import 'trash_screen.dart';
 
-const _appVersion = '1.7.3';
+const _appVersion = '1.8';
 const _apkLink = 'https://github.com/keplerdeskadmin-cpu/kelmo-scan/releases/latest/download/KelmoScan-arm64.apk';
 
 /// "Oct-21, 15:47" — the date style used in the document list.
@@ -74,6 +75,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
   String _q = '';
   final Set<int> _sel = {};
   int _tab = 0; // dashboard style: 0 = Home, 1 = Docs
+  int _lastBack = 0;
   ({int pages, int bytes, int month}) _st = (pages: 0, bytes: 0, month: 0);
   List<ScanDocument> _recent = [];
 
@@ -384,13 +386,19 @@ class _GalleryScreenState extends State<GalleryScreen> {
     final inFolder = _folder != null;
     final onHome = _dash && _tab == 0 && !_searching && !inFolder && !selecting;
     return PopScope(
-      canPop: !selecting && !_searching && !inFolder && !(_dash && _tab == 1),
+      canPop: false,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
         if (selecting) { _endSelect(); return; }
         if (_searching) { setState(() { _searching = false; _q = ''; }); _reload(); return; }
         if (inFolder) { setState(() => _folder = null); _reload(); return; }
-        if (_dash && _tab == 1) setState(() => _tab = 0);
+        if (_dash && _tab == 1) { setState(() => _tab = 0); return; }
+        final t = DateTime.now().millisecondsSinceEpoch;
+        if (t - _lastBack < 2000) { SystemNavigator.pop(); return; }
+        _lastBack = t;
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(const SnackBar(content: Text('Press back again to exit'), duration: Duration(seconds: 2)));
       },
       child: Scaffold(
         key: _key,

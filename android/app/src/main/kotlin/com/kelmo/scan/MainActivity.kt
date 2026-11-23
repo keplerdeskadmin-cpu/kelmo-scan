@@ -107,6 +107,25 @@ class MainActivity : FlutterFragmentActivity() {   // BiometricPrompt needs a Fr
                     prompt.authenticate(info)
                     return@setMethodCallHandler
                 }
+                if (call.method == "protectPdf") {
+                    worker.execute {
+                        try {
+                            com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(applicationContext)
+                            com.tom_roush.pdfbox.pdmodel.PDDocument.load(File(call.argument<String>("path")!!)).use { doc ->
+                                val pw = call.argument<String>("password")!!
+                                val policy = com.tom_roush.pdfbox.pdmodel.encryption.StandardProtectionPolicy(
+                                    pw, pw, com.tom_roush.pdfbox.pdmodel.encryption.AccessPermission())
+                                policy.encryptionKeyLength = 128
+                                doc.protect(policy)
+                                doc.save(File(call.argument<String>("out")!!))
+                            }
+                            runOnUiThread { result.success(true) }
+                        } catch (e: Throwable) {
+                            runOnUiThread { result.error("PDF_LOCK", e.message, null) }
+                        }
+                    }
+                    return@setMethodCallHandler
+                }
                 if (call.method == "abi") {
                     result.success(android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "")
                     return@setMethodCallHandler

@@ -100,14 +100,15 @@ class CsMoreButton extends StatelessWidget {
 PopupMenuItem<String> csMenuItem(String v, IconData i, String t) => CsMoreButton._item(v, i, t);
 
 /// Runs one of the shared "More" actions and reports the result with a snack bar.
-Future<void> runMoreAction(BuildContext context, String v, List<ScanPage> pages, String name, {String watermark = ''}) async {
+Future<void> runMoreAction(BuildContext context, String v, List<ScanPage> pages, String name,
+    {String watermark = '', String password = ''}) async {
   if (pages.isEmpty) return;
   final m = ScaffoldMessenger.of(context);
   void say(String t) => m..hideCurrentSnackBar()..showSnackBar(SnackBar(content: Text(t)));
   try {
     switch (v) {
       case 'email':
-        await DocExport.email(pages, name, watermark: watermark);
+        await DocExport.email(pages, name, watermark: watermark, password: password);
       case 'print':
         say('Preparing to print…');
         await DocExport.printPdf(pages, name, watermark: watermark);
@@ -115,7 +116,7 @@ Future<void> runMoreAction(BuildContext context, String v, List<ScanPage> pages,
         final where = await DocExport.toGallery(pages, name);
         say('${pages.length} image(s) saved to $where');
       case 'storage':
-        final where = await DocExport.toStorage(pages, name, watermark: watermark);
+        final where = await DocExport.toStorage(pages, name, watermark: watermark, password: password);
         say('Saved: $where');
     }
   } catch (e) {

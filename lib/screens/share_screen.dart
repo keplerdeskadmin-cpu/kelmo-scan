@@ -41,6 +41,8 @@ class _ShareScreenState extends State<ShareScreen> {
   bool _pdf = true;
   late ExportSize _size = widget.size ?? ExportSize.small;
   PdfSize _page = AppSettings.instance.pdfSize;
+  final _password = TextEditingController();
+  bool _showPw = false;
   bool _busy = false;
 
   String get _n => _name.text.trim().isEmpty ? widget.title : _name.text.trim();
@@ -57,10 +59,11 @@ class _ShareScreenState extends State<ShareScreen> {
   }
 
   Future<void> _share() => _run(() => _pdf
-      ? DocExport.sharePdf(widget.pages, _n, size: _size, watermark: widget.watermark, page: _page)
+      ? DocExport.sharePdf(widget.pages, _n, size: _size, watermark: widget.watermark, page: _page, password: _password.text)
       : DocExport.shareJpgs(widget.pages, _n, size: _size));
 
-  Future<void> _more(String v) => _run(() => runMoreAction(context, v, widget.pages, _n, watermark: widget.watermark));
+  Future<void> _more(String v) =>
+      _run(() => runMoreAction(context, v, widget.pages, _n, watermark: widget.watermark, password: _pdf ? _password.text : ''));
 
   Widget _row(String label, Widget child) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),
@@ -119,6 +122,23 @@ class _ShareScreenState extends State<ShareScreen> {
                 isExpanded: true, value: _page, dropdownColor: Colors.white,
                 items: [for (final s in PdfSize.values) DropdownMenuItem(value: s, child: Text(s.label))],
                 onChanged: (v) => setState(() => _page = v ?? _page),
+              ),
+            ),
+          if (_pdf)
+            _row(
+              'Password:',
+              TextField(
+                controller: _password,
+                obscureText: !_showPw,
+                style: const TextStyle(fontSize: 17),
+                decoration: InputDecoration(
+                  hintText: 'None (optional)',
+                  suffixIcon: IconButton(
+                    tooltip: _showPw ? 'Hide' : 'Show',
+                    icon: Icon(_showPw ? Icons.visibility_off : Icons.lock_outline),
+                    onPressed: () => setState(() => _showPw = !_showPw),
+                  ),
+                ),
               ),
             ),
           if (widget.watermark.isNotEmpty)

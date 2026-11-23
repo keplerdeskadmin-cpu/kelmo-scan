@@ -81,6 +81,34 @@ class _CameraScreenState extends State<CameraScreen> {
     await _openEditor(x.path, await _svc.detectCorners(x.path));
   }
 
+  /// Camera mode tabs: Single · Batch · ID Card · Passport.
+  int get _mode {
+    if (_tab == 1) return 2;
+    if (_recipe.kind == ScanKind.passport) return 3;
+    return _multi ? 1 : 0;
+  }
+
+  void _setMode(int i) {
+    if (_pages.isNotEmpty && i >= 2 && _mode < 2) return; // finish the batch first
+    setState(() {
+      _idFront = null;
+      switch (i) {
+        case 0:
+          if (_recipe.kind == ScanKind.passport || _recipe.kind == ScanKind.idCard) _recipe = ScanRecipe.byName('document');
+          _tab = 0; _multi = false;
+        case 1:
+          if (_recipe.kind == ScanKind.passport || _recipe.kind == ScanKind.idCard) _recipe = ScanRecipe.byName('document');
+          _tab = 0; _multi = true;
+        case 2:
+          _recipe = ScanRecipe.byName('idCard');
+          _tab = 1; _multi = false;
+        default:
+          _recipe = ScanRecipe.byName('passport');
+          _tab = 0; _multi = false;
+      }
+    });
+  }
+
   void _applyRecipe(ScanRecipe r, {bool remember = true}) {
     _recipe = r;
     _tab = r.twoSided ? 1 : 0;
@@ -344,13 +372,14 @@ class _CameraScreenState extends State<CameraScreen> {
             Container(
               color: p.background, height: 44,
               child: Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
-                for (int i = 0; i < 3; i++)
+                for (int i = 0; i < 4; i++)
                   GestureDetector(
-                    onTap: () => setState(() { _tab = i; _idFront = null; }),
+                    onTap: () => _setMode(i),
                     child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                      Text(['Document', 'ID Card', 'Photo'][i], style: TextStyle(fontWeight: FontWeight.w600, color: _tab == i ? p.accent : p.textMuted)),
+                      Text(['Single', 'Batch', 'ID Card', 'Passport'][i],
+                          style: TextStyle(fontWeight: FontWeight.w600, color: _mode == i ? p.accent : p.textMuted)),
                       const SizedBox(height: 3),
-                      Container(height: 3, width: 40, color: _tab == i ? p.accent : Colors.transparent),
+                      Container(height: 3, width: 40, color: _mode == i ? p.accent : Colors.transparent),
                     ]),
                   ),
               ]),
@@ -370,7 +399,9 @@ class _CameraScreenState extends State<CameraScreen> {
                     ),
                   ),
                 ),
-                _side(p, Icons.copy_all_rounded, 'Multi-page', _multi, () => setState(() => _multi = !_multi)),
+                _pages.isNotEmpty
+                    ? _side(p, Icons.check_circle, 'Done (${_pages.length})', true, () { if (!_saving) _finish(); })
+                    : const SizedBox(width: 60),
               ]),
             ),
           ]),
