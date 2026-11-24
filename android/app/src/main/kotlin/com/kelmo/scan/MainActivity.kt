@@ -79,9 +79,67 @@ class MainActivity : FlutterFragmentActivity() {   // BiometricPrompt needs a Fr
     // OCR is slow (seconds per page): own thread so live edge-detection never waits for it.
     private val ocrWorker = Executors.newSingleThreadExecutor()
 
+    // Files opened with / shared to Kelmo Scan, waiting for Flutter to take them.
+    private val shared = mutableListOf<Map<String, String>>()
+    private var sharedChannel: MethodChannel? = null
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent == null) return
+        val uris = mutableListOf<android.net.Uri>()
+        when (intent.action) {
+            Intent.ACTION_VIEW -> intent.data?.let { uris.add(it) }
+            Intent.ACTION_SEND -> {
+                @Suppress("DEPRECATION")
+                (intent.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM))?.let { uris.add(it) }
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                @Suppress("DEPRECATION")
+                intent.getParcelableArrayListExtra<android.net.Uri>(Intent.EXTRA_STREAM)?.let { uris.addAll(it) }
+            }
+            else -> return
+        }
+        if (uris.isEmpty()) return
+        val dir = File(cacheDir, "shared_in").apply { mkdirs() }
+        for (u in uris) {
+            try {
+                val mime = contentResolver.getType(u) ?: intent.type ?: ""
+                var name = "file"
+                try {
+                    contentResolver.query(u, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                        if (c.moveToFirst()) name = c.getString(0) ?: name
+                    }
+                } catch (_: Throwable) { u.lastPathSegment?.let { name = it.substringAfterLast('/') } }
+                val safe = name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                val f = File(dir, "${System.currentTimeMillis()}_$safe")
+                contentResolver.openInputStream(u)?.use { i -> f.outputStream().use { o -> i.copyTo(o) } }
+                val isPdf = mime == "application/pdf" || safe.lowercase().endsWith(".pdf")
+                shared.add(mapOf("path" to f.absolutePath, "name" to name, "type" to if (isPdf) "pdf" else "image"))
+            } catch (_: Throwable) {}
+        }
+        intent.action = null // do not import twice after a rotation
+        sharedChannel?.invokeMethod("sharedArrived", null)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         check(OpenCVLoader.initLocal()) { "OpenCV native libs failed to load" }
+
+        sharedChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "kelmo/shared").apply {
+            setMethodCallHandler { call, result ->
+                if (call.method == "take") {
+                    val list = ArrayList(shared)
+                    shared.clear()
+                    result.success(list)
+                } else result.notImplemented()
+            }
+        }
+        handleIntent(intent)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "doc_scanner/cv")
             .setMethodCallHandler { call, result ->

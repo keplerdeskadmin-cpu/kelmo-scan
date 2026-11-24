@@ -42,6 +42,11 @@ class ImportService {
     final r = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['pdf']);
     final path = r?.files.single.path;
     if (path == null) return null;
+    return pdfFilePages(path);
+  }
+
+  /// Every page of a PDF file as a JPEG.
+  static Future<List<String>> pdfFilePages(String path) async {
     final dir = await getTemporaryDirectory();
     final out = await _ch.invokeListMethod<String>(
         'renderPdf', {'path': path, 'outDir': '${dir.path}/pdf_import_${DateTime.now().millisecondsSinceEpoch}', 'maxSide': 2400});

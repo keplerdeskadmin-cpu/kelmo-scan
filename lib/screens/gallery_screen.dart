@@ -39,7 +39,7 @@ import 'settings_screen.dart';
 import 'share_screen.dart';
 import 'trash_screen.dart';
 
-const _appVersion = '1.8';
+const _appVersion = '1.8.1';
 const _apkLink = 'https://github.com/keplerdeskadmin-cpu/kelmo-scan/releases/latest/download/KelmoScan-arm64.apk';
 
 /// "Oct-21, 15:47" — the date style used in the document list.
@@ -88,6 +88,9 @@ class _GalleryScreenState extends State<GalleryScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => Future.delayed(const Duration(seconds: 3), () {
           if (mounted) UpdateService.autoCheck(context);
         }));
+    // "Open with" / Share → Kelmo Scan
+    _sharedCh.setMethodCallHandler((c) async { if (c.method == 'sharedArrived') _takeShared(); return null; });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _takeShared());
   }
 
   Future<void> _reload() async {
@@ -342,6 +345,42 @@ class _GalleryScreenState extends State<GalleryScreen> {
         applicationVersion: 'Version $_appVersion (build ${UpdateService.build})',
         applicationLegalese: 'Free & open-source (GPLv3)\nNo ads • No tracking • 100% offline',
       );
+
+  static const _sharedCh = MethodChannel('kelmo/shared');
+
+  /// PDFs / pictures opened with or shared to Kelmo Scan become documents.
+  Future<void> _takeShared() async {
+    List<Map<String, String>> items;
+    try {
+      final r = await _sharedCh.invokeListMethod<Map>('take') ?? [];
+      items = [for (final m in r) m.map((k, v) => MapEntry('$k', '$v'))];
+    } catch (_) {
+      return;
+    }
+    if (items.isEmpty || !mounted) return;
+    int? lastId;
+    await _work(() async {
+      final images = <String>[];
+      for (final it in items) {
+        if (it['type'] == 'pdf') {
+          final pages = await ImportService.pdfFilePages(it['path']!);
+          if (pages.isEmpty) { _snack('"${it['name']}" has no pages or is password protected'); continue; }
+          final title = (it['name'] ?? 'PDF').replaceAll(RegExp(r'\.pdf$', caseSensitive: false), '');
+          lastId = await _repo.createDocument(title: title, folderId: _folder?.id, pages: await ImportService.pagesFromImages(pages));
+        } else {
+          images.add(it['path']!);
+        }
+      }
+      if (images.isNotEmpty) {
+        lastId = await _repo.createDocument(
+            title: _settings.newDocumentName(), folderId: _folder?.id, pages: await ImportService.pagesFromImages(images));
+      }
+    });
+    if (lastId != null && mounted) {
+      await Navigator.push(context, MaterialPageRoute(builder: (_) => DocumentScreen(docId: lastId!)));
+      _reload();
+    }
+  }
 
   // ───────── dashboard quick actions
   Future<void> _quickStamp() async {
